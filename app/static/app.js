@@ -26,14 +26,14 @@ async function refreshClients() {
 
   if (data.clients.length === 0) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td colspan="3" class="empty">No devices detected yet</td>`;
+    tr.innerHTML = `<td colspan="4" class="empty">No devices detected yet</td>`;
     tbody.appendChild(tr);
     return;
   }
 
   for (const c of data.clients) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${c.ip}</td><td>${c.mac}</td><td>${c.hostname || "-"}</td>`;
+    tr.innerHTML = `<td>${c.ip}</td><td>${c.mac}</td><td>${c.name || "-"}</td><td>${c.vendor || "-"}</td>`;
     tbody.appendChild(tr);
   }
 }

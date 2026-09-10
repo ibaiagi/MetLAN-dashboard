@@ -1,15 +1,13 @@
-"""
-Connected-devices ("LAN clients") lookup, read from the kernel's
-neighbour (ARP) table via `ip -json neigh`.
-"""
+"""Connected-devices lookup via `ip -json neigh`."""
 import json
 import socket
 import subprocess
 
 from app.config import LAN_INTERFACES
+from app.services import vendor_service
 
 
-def _resolve_hostname(ip: str) -> str | None:
+def _resolve_name(ip: str) -> str | None:
     try:
         socket.setdefaulttimeout(0.5)
         return socket.gethostbyaddr(ip)[0]
@@ -42,13 +40,13 @@ def get_lan_clients() -> list[dict]:
         ip = entry.get("dst")
         mac = entry.get("lladdr")
         if not ip or not mac:
-            # Incomplete/failed neighbour entries - nothing useful to show.
             continue
         clients.append(
             {
                 "ip": ip,
                 "mac": mac,
-                "hostname": _resolve_hostname(ip),
+                "name": _resolve_name(ip),
+                "vendor": vendor_service.lookup_vendor(mac),
             }
         )
     return clients
