@@ -6,7 +6,6 @@ After=network.target
 Type=simple
 User=metlan
 WorkingDirectory=/home/metlan/metlan-gui
-Environment=RELAY_GPIO_PIN=17
 ExecStart=/home/metlan/metlan-gui/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 Restart=on-failure
 RestartSec=3

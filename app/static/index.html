@@ -3,58 +3,15 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#2563eb" />
   <title>MetLAN Dashboard</title>
   <link rel="stylesheet" href="/app.css" />
 </head>
 <body>
   <header>
     <h1>MetLAN</h1>
-    <span id="clock"></span>
+    <span id="date"></span>
   </header>
-
-  <main>
-    <section class="card" id="dongle-card">
-      <h2>Dongle power</h2>
-      <div class="row">
-        <span class="badge" id="dongle-state">…</span>
-        <button id="dongle-toggle" disabled>Toggle</button>
-      </div>
-      <p class="hint" id="dongle-hint"></p>
-    </section>
-
-    <section class="card" id="modem-card">
-      <h2>Modem</h2>
-      <dl id="modem-fields"></dl>
-    </section>
-
-    <section class="card" id="internet-card">
-      <h2>Internet</h2>
-      <dl id="internet-fields"></dl>
-    </section>
-
-    <section class="card" id="interfaces-card">
-      <h2>Interfaces</h2>
-      <table id="interfaces-table">
-        <thead>
-          <tr><th>Name</th><th>Role</th><th>Up</th><th>IPv4</th><th>RX/s</th><th>TX/s</th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </section>
-
-    <section class="card" id="clients-card">
-      <h2>LAN clients</h2>
-      <table id="clients-table">
-        <thead><tr><th>IP</th><th>MAC</th><th>State</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </section>
-
-    <section class="card" id="log-card">
-      <h2>Action log</h2>
-      <ul id="log-list"></ul>
-    </section>
-  </main>
 
   <script src="/app.js"></script>
 </body>
