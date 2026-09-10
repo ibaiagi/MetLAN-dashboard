@@ -1,0 +1,101 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f5f6f8;
+  --card-bg: #ffffff;
+  --text: #1c1e21;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  --ok: #16a34a;
+  --bad: #dc2626;
+  --border: #e5e7eb;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171a;
+    --card-bg: #1e2125;
+    --text: #e8e9eb;
+    --muted: #9aa0a6;
+    --border: #2c2f34;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding-inline: 16px;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding-block: 16px;
+}
+
+h1 { font-size: 1.3rem; margin: 0; }
+#clock { color: var(--muted); font-size: 0.85rem; }
+
+main {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  padding-bottom: 24px;
+}
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+
+.card h2 {
+  font-size: 0.95rem;
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+dl { margin: 0; }
+dl div { display: flex; justify-content: space-between; padding: 3px 0; }
+dt { color: var(--muted); }
+dd { margin: 0; }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-weight: 500; }
+
+.row { display: flex; align-items: center; gap: 10px; }
+
+.badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  background: var(--border);
+}
+.badge.on { background: var(--ok); color: white; }
+.badge.off { background: var(--muted); color: white; }
+.badge.unavailable { background: var(--bad); color: white; }
+
+button {
+  border: none;
+  background: var(--accent);
+  color: white;
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.hint { color: var(--muted); font-size: 0.8rem; margin: 8px 0 0; }
+
+#log-list { list-style: none; margin: 0; padding: 0; font-size: 0.82rem; max-height: 180px; overflow-y: auto; }
+#log-list li { padding: 3px 0; border-bottom: 1px dashed var(--border); color: var(--muted); }
