@@ -1,36 +1,28 @@
 # MetLAN Dashboard
 
-FastAPI + plain HTML/JS dashboard for the MetLAN router project
-(context.md section 10): dongle radio control and network stats, running
-on the single indoor Raspberry Pi 4.
+Web dashboard for the MetLAN router project (context.md section 10),
+running on the single indoor Raspberry Pi 4. Eventual scope: dongle radio
+control (Phase 1 - software-only via ModemManager, no relay/GPIO - see
+context.md section 2) and network stats (LAN interfaces, internet
+reachability, client list).
 
-**Phase 1 (current):** the dongle's on/off control is software-only, via
-ModemManager (`mmcli -m <index> --enable`/`--disable`) - no relay, no
-GPIO, no extra hardware. See context.md section 2's Phase 1/Phase 2 note.
-The hardware V+ relay disconnect is a deferred Phase 2 upgrade; its
-(currently dormant, not wired into any router) code lives in
-`app/services/relay_service.py`.
-
-**No auth in v1** (LAN-trust assumption, per context.md). Do not expose
-this port outside the LAN.
+**No auth planned for v1** (LAN-trust assumption, per context.md). Do not
+expose this port outside the LAN.
 
 ## Status
 
-- **Frontend is currently a blank slate** (`app/static/`): just the
-  "MetLAN" title and a live clock in the header, nothing else. The full
-  dashboard UI (dongle control, network stats, LAN clients, activity log)
-  is being redesigned from scratch and will be built back up
-  incrementally - don't be surprised the page looks empty.
-- **The backend API is unaffected and already works** - all endpoints
-  below respond normally, they're just not called from the page yet. Any
-  frontend work picks back up by fetching them from `app/static/app.js`.
-- Network stats (interfaces, internet reachability) work immediately once
-  wired in - no extra hardware needed.
-- LAN client list will be mostly empty until DHCP/NAT (nftables) is
-  configured on this Pi - that's expected, not a bug.
-- The dongle endpoints report "not connected" until the Huawei E3372h-607
-  is plugged in and ModemManager is installed (`sudo apt install
-  modemmanager usb-modeswitch`).
+**This is currently a static-only page, being rebuilt from scratch.**
+`app/main.py` serves just `app/static/` (title + live date in the
+header) - there is no backend API right now. The `routers/`/`services/`
+modules that implemented dongle control and network stats (ModemManager
+`mmcli` wrapper, `psutil`-based LAN stats) were deliberately removed
+while the frontend design gets settled first; they'll be rebuilt once
+that's stable. `app/config.py` is a near-empty placeholder for when that
+happens.
+
+If you're picking this repo up expecting a working dashboard: there isn't
+one yet, just the page shell. See "Known open points" below for what's
+still to do.
 
 ## Running it on the Pi
 
@@ -47,13 +39,14 @@ LAN.
 
 ## Running it as a boot service
 
-A systemd unit is included (`metlan-gui.service`). **The `User` and
-`WorkingDirectory` in it are placeholders** (`metlan` /
-`/home/metlan/metlan-gui`) - if your actual username or clone path is
-different, the service will fail to start with a `status=203/EXEC` error
-("Unable to locate executable ...") because it's looking for the venv in
-the wrong place. Check with `whoami` and `pwd` on the Pi and edit the file
-to match before installing it:
+A systemd unit is included (`metlan-gui.service`). **Double-check the
+`User` and `WorkingDirectory` in it actually match your setup** (`whoami`
+and `pwd` on the Pi) before installing - a mismatch here fails the
+service at startup with a `status=203/EXEC` error ("Unable to locate
+executable ...") because it's looking for the venv in the wrong place.
+This has actually happened during this project's development, so it's
+worth the 10-second check rather than assuming the checked-in defaults
+are right for your box.
 
 ```bash
 sudo cp metlan-gui.service /etc/systemd/system/
@@ -86,12 +79,10 @@ re-run it after every reboot.
   ```
 
 - **Edited a static file** (`index.html`/`app.css`/`app.js`): these are
-  served straight from disk by FastAPI's `StaticFiles` on every request -
-  **no restart is actually needed** for the server to see the change. If
-  a static-file edit doesn't show up in the browser, it is almost always
-  the *browser* caching the old file, not the server - see the checklist
-  below before assuming anything is broken server-side. Restarting the
-  service doesn't hurt and rules the server out, but it's rarely the fix.
+  served with `Cache-Control: no-store` (see `app/main.py`'s
+  `NoCacheStaticFiles`), so a normal browser reload picks up the change -
+  no restart needed, and no incognito/cache-clearing tricks required
+  either, unlike earlier in this project before that header existed.
 
 Restarting the whole Pi (`sudo reboot`) is essentially never needed for
 any of the above - it doesn't do anything `systemctl restart metlan-gui`
@@ -132,67 +123,58 @@ the files directly with `scp` instead of patching is often simpler:
 scp app\static\index.html app\static\app.css app\static\app.js metlan@<pi-host>.local:~/MetLAN-dashboard/app/static/
 ```
 
-**Watch out for old patches re-applying stale content.** If you re-run an
-earlier `changes.patch` (or `git apply` an outdated one), it can silently
-revert a file that had since moved on - this has actually happened in
-this project (a CSS fix and this README both got reverted this way).
-Before trusting a "why isn't my change showing up" investigation, `cat`
-the file on the Pi (or re-run `git diff HEAD` on the dev machine) and
-confirm it's really the version you think it is, rather than assuming.
+**Watch out for old patches re-applying stale content.** Re-running an
+earlier `changes.patch` (or applying an outdated one) can silently revert
+a file that had since moved on - this has actually happened in this
+project more than once. Before trusting a "why isn't my change showing
+up" investigation, `cat` the file on the Pi (or re-run `git diff HEAD` on
+the dev machine) and confirm it's really the version you think it is.
 
 ### If a change doesn't show up
 
 Roughly in the order to check them:
 
-1. **Browser cache.** Hard refresh (`Ctrl+Shift+R`) or open in an
-   incognito/private window. This alone has explained most "it's not
-   working" cases so far.
-2. **The file on the Pi doesn't actually match what you meant to send** -
+1. **The file on the Pi doesn't actually match what you meant to send** -
    `cat` it and compare, rather than assuming the transfer worked.
-3. **The static files don't agree with each other** - e.g. `index.html`
+2. **The static files don't agree with each other** - e.g. `index.html`
    referencing `id="foo"` while `app.js` looks for `id="bar"`, or
    `index.html` missing the `<script src="/app.js"></script>` tag
    entirely (this exact thing happened once - a script tag got dropped
    during a rewrite and nothing on the page ever ran, with zero console
    errors, since a script that's never even requested can't throw).
-4. **Browser console** (`F12` → Console) for an actual JS error.
+3. **Browser cache** - should no longer be an issue for static files
+   given the `no-store` header, but if you're on an old cached copy from
+   before that header existed, a plain reload can still reuse it; "Clear
+   site data" (DevTools -> Application tab) forces a real re-fetch.
+4. **Browser console** (`F12` -> Console) for an actual JS error.
 5. `sudo systemctl status metlan-gui` / `journalctl -u metlan-gui -f` for
    backend/service problems specifically.
-
-## API
-
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/api/dongle/status` | GET | Modem connection state + radio power state + telemetry |
-| `/api/dongle/power` | POST `{"state": true\|false}` | Enable/disable the modem radio (Phase 1 on/off) |
-| `/api/dongle/log` | GET | Recent dongle-control actions |
-| `/api/network/status` | GET | LAN interfaces + internet reachability |
-| `/api/network/clients` | GET | LAN client list (ARP table) |
 
 ## Project layout
 
 ```
 app/
-  main.py                - FastAPI app, mounts routers + static frontend
-  config.py               - hardware/software config (Phase 1 active values, Phase 2 placeholders)
-  routers/
-    network.py             - /api/network/* endpoints
-    dongle.py               - /api/dongle/* endpoints (Phase 1: ModemManager control)
-  services/
-    network_service.py     - psutil/ip-based LAN stats
-    modem_service.py       - mmcli wrapper: status + Phase 1 power control, degrades gracefully with no modem
-    relay_service.py       - Phase 2 (dormant) gpiozero wrapper, not imported by any router yet
+  main.py                - FastAPI app; mounts app/static/ with caching disabled (NoCacheStaticFiles)
+  config.py               - near-empty placeholder; was the config for the removed routers/services, kept for the rebuild
   static/
-    index.html / app.css / app.js  - title + live clock only right now; dashboard UI is being redesigned from scratch
+    index.html / app.css / app.js  - title + live date in the header; everything else is being redesigned from scratch
 ```
+
+No `routers/` or `services/` directories right now - they held the
+dongle-control and network-stats API and were removed deliberately while
+the frontend gets settled (see "Status" above). There is currently no
+`/api/*` endpoint of any kind.
 
 ## Known open points (tracked in context.md, not decided here)
 
-- Frontend redesign in progress - the panels described in context.md
-  section 10 (dongle control, network stats, LAN clients, activity log)
-  still need to be rebuilt against the existing API above.
-- Phase 2 relay GPIO pin + NO/NC wiring (section 7) - wire
-  `relay_service.py` back into `app/routers/dongle.py` once that hardware
-  exists.
+- Frontend redesign in progress - only the header (title + date) exists
+  so far. The panels described in context.md section 10 (dongle control,
+  network stats, LAN clients, activity log) still need designing.
+- Backend rebuild - the dongle-control (ModemManager `mmcli`) and
+  network-stats (`psutil`) logic needs to be rewritten from scratch once
+  the frontend settles on what data it actually needs; it doesn't need to
+  be identical to what existed before.
+- Phase 2 relay GPIO pin + NO/NC wiring (context.md section 7) - out of
+  scope until the Phase 1 software control above is rebuilt.
 - No auth - matches the v1 decision, revisit if the LAN-trust assumption
   ever changes (backlog, section 10).

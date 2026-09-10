@@ -1,20 +1,25 @@
 :root {
   color-scheme: light dark;
   --bg: #f2f4f7;
+  --card-bg: #ffffff;
   --text: #1a1d23;
   --muted: #66707d;
   --accent: #2563eb;
   --border: #e6e8ec;
   --content-max-width: 960px;
+  --radius: 12px;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #101215;
+    --card-bg: #191c20;
     --text: #eceef1;
     --muted: #9aa3af;
     --accent: #5b8cff;
     --border: #2a2e34;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
   }
 }
 
@@ -52,4 +57,52 @@ h1 {
 #date {
   color: var(--muted);
   font-size: clamp(0.75rem, 0.7rem + 0.6vw, 0.95rem);
+}
+
+main {
+  max-width: var(--content-max-width);
+  margin-inline: auto;
+  padding: 16px;
+}
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 16px 18px;
+}
+
+.card h2 {
+  font-size: 0.8rem;
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.table-scroll { overflow-x: auto; }
+
+table { width: 100%; min-width: 420px; border-collapse: collapse; font-size: 0.85rem; }
+
+th, td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+th {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+td.empty {
+  color: var(--muted);
+  font-style: italic;
+  white-space: normal;
 }
