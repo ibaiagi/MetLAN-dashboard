@@ -102,6 +102,16 @@ expose this port outside the LAN.
   stats (signal, data usage, WAN bandwidth)** - there's no dongle
   connected to this Pi yet, so that's on standby until the dongle-control
   rebuild happens; see "Known open points."
+- **New: line-chart history under each Statistics table**, plain
+  `<canvas>` drawn by hand in `app.js` - no charting library, works fully
+  offline. Interface throughput and CPU usage each keep a 5-minute
+  in-memory history (one point per poll: 1s / 2s respectively).
+  Temperature keeps 5 hours of history, but is downsampled to one sample
+  per minute client-side (the `/api/stats/system` poll itself stays at
+  2s for the live numbers in the table - only every 30th-ish reading gets
+  appended to the chart history) so 5h of history is ~300 points, not
+  9000. All of this history lives only in the browser tab's memory and is
+  lost on page reload - nothing is persisted server-side.
 - Static files *and* API responses are served with `Cache-Control:
   no-store` (see `app/main.py`) - a normal browser reload always picks up
   a change, no incognito/cache-clearing needed.
