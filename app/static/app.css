@@ -153,10 +153,43 @@ td.empty {
   margin-bottom: 4px;
 }
 
+.chart-canvas-wrap {
+  position: relative;
+}
+
 .chart-block canvas {
   display: block;
   width: 100%;
   height: 130px;
+  cursor: crosshair;
+}
+
+.chart-tooltip {
+  position: absolute;
+  top: 2px;
+  transform: translateX(-50%);
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 0.7rem;
+  box-shadow: var(--shadow);
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 2;
+}
+
+.chart-tooltip-time {
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 3px;
+}
+
+.chart-tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
 }
 
 .chart-controls {

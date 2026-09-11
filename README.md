@@ -139,6 +139,13 @@ expose this port outside the LAN.
     everything available). Settings are per-chart and reset on page
     reload (not persisted) - that's deliberate, this is a "look at this
     right now" control, not a saved preference.
+  - **All charts (throughput, CPU, temperature) show a hover tooltip**:
+    moving the mouse over a chart snaps a crosshair to the nearest actual
+    sample and shows its exact timestamp plus each series' value at that
+    point - not the raw cursor position, the real sample. Implemented
+    entirely in `drawChart`/`wireHover` in `app.js` (mouse position ->
+    nearest data point by timestamp, no library). Mouse-only for now, no
+    touch support.
 - Static files *and* API responses are served with `Cache-Control:
   no-store` (see `app/main.py`) - a normal browser reload always picks up
   a change, no incognito/cache-clearing needed.

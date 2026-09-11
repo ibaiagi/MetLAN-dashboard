@@ -81,6 +81,25 @@ function filterWindow(points, windowH) {
   return points.filter((p) => p.t >= cutoff);
 }
 
+function nearestPoint(points, t) {
+  let best = null, bestDist = Infinity;
+  for (const p of points) {
+    const d = Math.abs(p.t - t);
+    if (d < bestDist) { bestDist = d; best = p; }
+  }
+  return best;
+}
+
+function formatTimestamp(ms) {
+  return new Date(ms).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 // key -> {windowH, minV, maxV}; null means "auto". Only charts created with
 // opts.controls=true (CPU/temperature) get an entry and on-page inputs.
 const chartSettings = {};
@@ -114,6 +133,24 @@ function wireChartControls(block, key, onChange) {
   });
 }
 
+function wireHover(canvas) {
+  canvas.addEventListener("mousemove", (e) => {
+    const scale = canvas.__scale;
+    if (!scale) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    canvas.__hoverT =
+      mx < scale.padL || mx > rect.width - scale.padR
+        ? null
+        : scale.minT + ((mx - scale.padL) / scale.plotW) * (scale.maxT - scale.minT);
+    if (canvas.__series) drawChart(canvas, canvas.__series, canvas.__opts);
+  });
+  canvas.addEventListener("mouseleave", () => {
+    canvas.__hoverT = null;
+    if (canvas.__series) drawChart(canvas, canvas.__series, canvas.__opts);
+  });
+}
+
 function ensureChartBlock(container, key, opts) {
   let block = container.querySelector(`[data-key="${key}"]`);
   if (block) return block;
@@ -129,8 +166,12 @@ function ensureChartBlock(container, key, opts) {
         <button type="button" class="ctl-reset">Reset</button>
       </div>`
     : "";
-  block.innerHTML = `<div class="chart-title"></div>${controlsHtml}<canvas></canvas><div class="chart-legend"></div>`;
+  block.innerHTML = `<div class="chart-title"></div>${controlsHtml}<div class="chart-canvas-wrap"><canvas></canvas><div class="chart-tooltip" hidden></div></div><div class="chart-legend"></div>`;
   container.appendChild(block);
+
+  const canvas = block.querySelector("canvas");
+  canvas.__tooltipEl = block.querySelector(".chart-tooltip");
+  wireHover(canvas);
 
   if (opts.controls) {
     chartSettings[key] = { windowH: null, minV: null, maxV: null };
@@ -140,8 +181,12 @@ function ensureChartBlock(container, key, opts) {
 }
 
 // Plain canvas line chart, no dependencies: auto-scaled Y axis (unless
-// opts.minV/maxV pin it), gridlines, one line per series.
+// opts.minV/maxV pin it), gridlines, one line per series, hover
+// crosshair + tooltip showing the exact sample timestamp/value.
 function drawChart(canvas, series, opts = {}) {
+  canvas.__series = series;
+  canvas.__opts = opts;
+
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
   const w = rect.width, h = rect.height;
@@ -153,7 +198,10 @@ function drawChart(canvas, series, opts = {}) {
   ctx.clearRect(0, 0, w, h);
 
   const points = series.flatMap((s) => s.points);
-  if (points.length < 2) return;
+  if (points.length < 2) {
+    if (canvas.__tooltipEl) canvas.__tooltipEl.hidden = true;
+    return;
+  }
 
   const minT = Math.min(...points.map((p) => p.t));
   const maxT = Math.max(...points.map((p) => p.t));
@@ -175,6 +223,8 @@ function drawChart(canvas, series, opts = {}) {
 
   const x = (t) => padL + ((t - minT) / (maxT - minT || 1)) * plotW;
   const y = (v) => padT + plotH - ((v - minV) / (maxV - minV || 1)) * plotH;
+
+  canvas.__scale = { minT, maxT, padL, padR, plotW };
 
   ctx.strokeStyle = cssVar("--border");
   ctx.lineWidth = 1;
@@ -204,6 +254,43 @@ function drawChart(canvas, series, opts = {}) {
     });
     ctx.stroke();
   }
+
+  const tooltipEl = canvas.__tooltipEl;
+  if (!tooltipEl) return;
+
+  const hoverT = canvas.__hoverT;
+  const anchorSeries = series.find((s) => s.points.length > 0);
+  const anchor = hoverT != null && anchorSeries && nearestPoint(anchorSeries.points, hoverT);
+  if (!anchor) {
+    tooltipEl.hidden = true;
+    return;
+  }
+
+  const hx = x(anchor.t);
+  ctx.save();
+  ctx.setLineDash([4, 3]);
+  ctx.strokeStyle = cssVar("--muted");
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(hx, padT);
+  ctx.lineTo(hx, padT + plotH);
+  ctx.stroke();
+  ctx.restore();
+
+  const rows = [];
+  for (const s of series) {
+    if (s.points.length === 0) continue;
+    const p = nearestPoint(s.points, anchor.t);
+    ctx.beginPath();
+    ctx.fillStyle = s.color;
+    ctx.arc(x(p.t), y(p.v), 3, 0, Math.PI * 2);
+    ctx.fill();
+    rows.push(`<div class="chart-tooltip-row"><span class="legend-dot" style="background:${s.color}"></span>${s.label}: ${fmt(p.v)}</div>`);
+  }
+
+  tooltipEl.innerHTML = `<div class="chart-tooltip-time">${formatTimestamp(anchor.t)}</div>${rows.join("")}`;
+  tooltipEl.style.left = `${Math.min(Math.max(hx, 46), w - 46)}px`;
+  tooltipEl.hidden = false;
 }
 
 function updateLegend(block, series) {
