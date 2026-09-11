@@ -104,14 +104,41 @@ expose this port outside the LAN.
   rebuild happens; see "Known open points."
 - **New: line-chart history under each Statistics table**, plain
   `<canvas>` drawn by hand in `app.js` - no charting library, works fully
-  offline. Interface throughput and CPU usage each keep a 5-minute
-  in-memory history (one point per poll: 1s / 2s respectively).
-  Temperature keeps 5 hours of history, but is downsampled to one sample
-  per minute client-side (the `/api/stats/system` poll itself stays at
-  2s for the live numbers in the table - only every 30th-ish reading gets
-  appended to the chart history) so 5h of history is ~300 points, not
-  9000. All of this history lives only in the browser tab's memory and is
-  lost on page reload - nothing is persisted server-side.
+  offline.
+  - **Interface throughput**: 5-minute in-memory history (one point per
+    1s poll). Lives only in the browser tab and is lost on reload -
+    intentional, it changes too fast/is too voluminous to be worth
+    logging to disk.
+  - **CPU usage and temperature: persisted server-side**, so they no
+    longer depend on keeping a browser tab open for hours to see the
+    trend. `app/services/history_service.py` samples
+    `stats_service.get_system_stats()` once a minute (a background task
+    started in `app/main.py`'s lifespan, same pattern as the ping-sweep
+    discovery task) and writes it to a small SQLite file
+    (`app/data/history.db`, gitignored - it's runtime state, not
+    something to commit). Old rows past the retention window are deleted
+    on every write. `GET /api/stats/history` returns everything still in
+    the window; the frontend re-fetches it once a minute
+    (`HISTORY_REFRESH_MS`) and redraws both charts from scratch - no
+    client-side accumulation logic needed. Default retention is 24h at a
+    1-sample/minute resolution (~1440 rows per metric); both the sample
+    interval and retention window are configurable via
+    `STATS_HISTORY_SAMPLE_INTERVAL_S` / `STATS_HISTORY_RETENTION_HOURS`
+    env vars in `app/config.py`.
+  - **CPU and temperature charts have Window/Min/Max controls** (plain
+    number inputs above each chart, plus a "Reset" button). By default
+    all three are blank, meaning auto: the full fetched window, and the
+    Y-axis auto-fit to whatever the data spans. Typing a "Window (h)"
+    value re-draws that one chart zoomed to just the last N hours;
+    typing Min/Max pins the Y-axis instead of auto-fitting. All of this
+    is applied client-side against the already-fetched history (see
+    `chartSettings`/`renderCpuChart`/`renderTempChart` in `app.js`), so
+    it redraws instantly and doesn't need a new request to the backend -
+    it can't show more than what `/api/stats/history` actually returned,
+    though (i.e. a Window bigger than the server's retention just shows
+    everything available). Settings are per-chart and reset on page
+    reload (not persisted) - that's deliberate, this is a "look at this
+    right now" control, not a saved preference.
 - Static files *and* API responses are served with `Cache-Control:
   no-store` (see `app/main.py`) - a normal browser reload always picks up
   a change, no incognito/cache-clearing needed.
@@ -253,16 +280,18 @@ Roughly in the order to check them:
 |---|---|---|
 | `/api/network/clients` | GET | Connected devices from the ARP/neighbour table: `{"clients": [{"ip", "mac", "name", "vendor"}]}` (`name` is best-effort reverse-DNS, often null; `vendor` is a local MAC-OUI lookup, works regardless of DHCP - see "Status" above for both. The ARP table itself is kept warm by a background ping sweep - see "Status".) |
 | `/api/stats/throughput` | GET | Per-interface cumulative byte counters: `{"interfaces": [{"interface", "rx_bytes", "tx_bytes", "timestamp"}]}` - raw counters, not a rate; the frontend diffs consecutive polls itself (see "Status"). |
-| `/api/stats/system` | GET | CPU + temperature: `{"cpu_percent", "cpu_percent_per_core": [...], "temperatures": [{"sensor", "current", "high", "critical"}]}`. `temperatures` is whatever `psutil.sensors_temperatures()` finds on the box - on a Pi 4 that's normally just the SoC (`cpu_thermal` / similar label), see "Status". |
+| `/api/stats/system` | GET | CPU + temperature, live snapshot: `{"cpu_percent", "cpu_percent_per_core": [...], "temperatures": [{"sensor", "current", "high", "critical"}]}`. `temperatures` is whatever `psutil.sensors_temperatures()` finds on the box - on a Pi 4 that's normally just the SoC (`cpu_thermal` / similar label), see "Status". |
+| `/api/stats/history` | GET | CPU + temperature, persisted history: `{"cpu": [[timestamp_ms, value], ...], "temperatures": {"<sensor>": [[timestamp_ms, value], ...]}}`. Backed by `app/data/history.db` (SQLite), sampled once/minute server-side - see "Status". |
 
 ## Project layout
 
 ```
 app/
-  main.py                    - FastAPI app: lifespan-started ping sweep + no-cache middleware + static mount + routers
-  config.py                   - LAN_INTERFACES (which interfaces count as "LAN")
+  main.py                    - FastAPI app: lifespan-started ping sweep + history sampler + no-cache middleware + static mount + routers
+  config.py                   - LAN_INTERFACES, STATS_HISTORY_SAMPLE_INTERVAL_S, STATS_HISTORY_RETENTION_HOURS
   data/
     oui.tsv                    - bundled offline MAC-OUI -> vendor table (see its own header)
+    history.db                 - runtime CPU/temperature history (SQLite, gitignored, created on first run)
   routers/
     network.py                 - /api/network/* endpoints
     stats.py                   - /api/stats/* endpoints
@@ -270,7 +299,8 @@ app/
     network_service.py         - ip-neigh-based connected-devices lookup, degrades gracefully with no data
     vendor_service.py          - MAC OUI -> vendor name, from app/data/oui.tsv
     discovery_service.py       - background subnet ping sweep, keeps the ARP cache warm
-    stats_service.py           - per-interface rx/tx byte counters + CPU/temperature stats, via psutil
+    stats_service.py           - per-interface rx/tx byte counters + live CPU/temperature snapshot, via psutil
+    history_service.py         - persists CPU/temperature samples to app/data/history.db, prunes old rows
   static/
     index.html / app.css / app.js  - title + live date+time header, tab switcher, "Devices"/"Statistics" panels
 ```

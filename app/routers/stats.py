@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.services import stats_service
+from app.services import history_service, stats_service
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
 
@@ -13,3 +13,8 @@ def throughput():
 @router.get("/system")
 def system():
     return stats_service.get_system_stats()
+
+
+@router.get("/history")
+def history():
+    return history_service.get_history()
