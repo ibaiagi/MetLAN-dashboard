@@ -11,13 +11,13 @@ expose this port outside the LAN.
 
 ## Status
 
-- **Frontend**: header (title + live date) plus one panel so far -
+- **Frontend**: header (title + live date+time) plus one panel so far -
   "Connected devices", listing IP/MAC/device name/vendor for whatever's in
   the Pi's ARP/neighbour table. Everything else described in context.md
   section 10 (dongle control, internet reachability, interface
   throughput, activity log) is still to be built.
-- **Backend**: only `app/routers/network.py` +
-  `app/services/network_service.py` + `app/services/vendor_service.py`
+- **Backend**: `app/routers/network.py` + `app/services/network_service.py`
+  + `app/services/vendor_service.py` + `app/services/discovery_service.py`
   exist right now, backing the connected-devices panel. There is no
   dongle-control code (ModemManager/`mmcli`) at all currently - it was
   removed in an earlier reset pending redesign and hasn't been rebuilt
@@ -43,7 +43,7 @@ expose this port outside the LAN.
   *against* adding mDNS/NetBIOS lookups as a stopgap - not reliable
   enough across device types to be worth the extra dependency and
   complexity before the DHCP work happens anyway.
-- **New: a `vendor` column, resolved locally from the device's MAC
+- **A `vendor` column, resolved locally from the device's MAC
   address - works today, regardless of who runs DHCP.** Unlike the
   `name` field above, this doesn't depend on the Pi (or anything else)
   running DHCP at all: `app/services/vendor_service.py` looks the MAC's
@@ -61,6 +61,23 @@ expose this port outside the LAN.
   specifically (the "locally administered" bit in the MAC) and reports
   it as "Randomized/private address" rather than a lookup miss, since no
   vendor table could ever answer for one of those.
+- **New: WiFi/other devices that never talk to the Pi directly now get
+  discovered too, via a background ping sweep.** `ip -json neigh` (what
+  `network_service.py` reads) is the kernel's ARP cache - it only knows
+  about hosts the Pi has actually exchanged packets with. A phone on the
+  home router's WiFi that only ever talks to the router/internet, never
+  to the Pi's own address, was invisible before this. `app/services/
+  discovery_service.py` now pings every address in each `LAN_INTERFACES`
+  subnet every 30s in the background (`app/main.py`'s FastAPI `lifespan`
+  starts it at startup), which forces ARP resolution for anything that
+  responds - so `ip neigh` (and therefore the connected-devices panel)
+  picks it up within ~30s. Needs no extra install: Raspberry Pi OS's
+  `ping` binary works unprivileged out of the box. **Residual gap:** a
+  device that blocks ICMP ping but still answers ARP won't be caught by
+  this - rare for consumer phones/tablets, but possible for some
+  security-conscious devices. `arp-scan` would close that gap too, at
+  the cost of needing root/`CAP_NET_RAW` - not done for now, see "Known
+  open points."
 - Static files *and* API responses are served with `Cache-Control:
   no-store` (see `app/main.py`) - a normal browser reload always picks up
   a change, no incognito/cache-clearing needed.
@@ -160,46 +177,53 @@ instead of patching is often simpler:
 scp app\static\index.html app\static\app.css app\static\app.js metlan@<pi-host>.local:~/MetLAN-dashboard/app/static/
 ```
 
-**Watch out for old patches re-applying stale content.** Re-running an
-earlier `changes.patch` (or applying an outdated one) can silently revert
-a file that had since moved on - this has happened repeatedly in this
-project, including to this README itself several times. Before trusting
-a "why isn't my change showing up" investigation, `cat` the file on the
-Pi (or re-run `git diff HEAD` / `git status` on the dev machine) and
-confirm it's really the version you think it is - especially right after
-committing, which is when a stray local revert is easiest to miss.
+**Watch out for old patches re-applying stale content, and for
+uncommitted edits silently getting reverted.** Re-running an earlier
+`changes.patch` can revert a file that had since moved on. Separately,
+this project has also seen edits get discarded on the dev machine before
+they were ever committed (cause not confirmed - possibly a `git
+checkout`/`restore`/`reset` run without realizing there were uncommitted
+changes in the way). **The practical mitigation: commit a change as soon
+as you're happy with it, rather than leaving it sitting uncommitted.**
+Before trusting a "why isn't my change showing up" investigation, `cat`
+the file on the Pi (or re-run `git diff HEAD` / `git status` on the dev
+machine) and confirm it's really the version you think it is, and that
+it was actually committed.
 
 ### If a change doesn't show up
 
 Roughly in the order to check them:
 
-1. **The file on the Pi doesn't actually match what you meant to send** -
+1. **It was never deployed to the Pi at all** - a local commit (or even
+   just a local edit) on the dev machine doesn't reach the Pi by itself;
+   confirm the `scp`/patch step actually happened.
+2. **The file on the Pi doesn't actually match what you meant to send** -
    `cat` it and compare, rather than assuming the transfer worked.
-2. **The static files don't agree with each other** - e.g. `index.html`
+3. **The static files don't agree with each other** - e.g. `index.html`
    referencing `id="foo"` while `app.js` looks for `id="bar"`, or
    `index.html` missing the `<script src="/app.js"></script>` tag
    entirely (this exact thing happened once - a script tag got dropped
    during a rewrite and nothing on the page ever ran, with zero console
    errors, since a script that's never even requested can't throw).
-3. **Browser cache** - shouldn't be an issue given the `no-store` header
+4. **Browser cache** - shouldn't be an issue given the `no-store` header
    on everything, but if you're on an old cached copy from before that
    header existed, "Clear site data" (DevTools -> Application tab) forces
    a real re-fetch where a plain reload might not.
-4. **Browser console** (`F12` -> Console) for an actual JS error.
-5. `sudo systemctl status metlan-gui` / `journalctl -u metlan-gui -f` for
+5. **Browser console** (`F12` -> Console) for an actual JS error.
+6. `sudo systemctl status metlan-gui` / `journalctl -u metlan-gui -f` for
    backend/service problems specifically.
 
 ## API
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/api/network/clients` | GET | Connected devices from the ARP/neighbour table: `{"clients": [{"ip", "mac", "name", "vendor"}]}` (`name` is best-effort reverse-DNS, often null; `vendor` is a local MAC-OUI lookup, works regardless of DHCP - see "Status" above for both) |
+| `/api/network/clients` | GET | Connected devices from the ARP/neighbour table: `{"clients": [{"ip", "mac", "name", "vendor"}]}` (`name` is best-effort reverse-DNS, often null; `vendor` is a local MAC-OUI lookup, works regardless of DHCP - see "Status" above for both. The ARP table itself is kept warm by a background ping sweep - see "Status".) |
 
 ## Project layout
 
 ```
 app/
-  main.py                    - FastAPI app: no-cache middleware + static mount + routers
+  main.py                    - FastAPI app: lifespan-started ping sweep + no-cache middleware + static mount + routers
   config.py                   - LAN_INTERFACES (which interfaces count as "LAN")
   data/
     oui.tsv                    - bundled offline MAC-OUI -> vendor table (see its own header)
@@ -208,8 +232,9 @@ app/
   services/
     network_service.py         - ip-neigh-based connected-devices lookup, degrades gracefully with no data
     vendor_service.py          - MAC OUI -> vendor name, from app/data/oui.tsv
+    discovery_service.py       - background subnet ping sweep, keeps the ARP cache warm
   static/
-    index.html / app.css / app.js  - title + live date header, "Connected devices" panel
+    index.html / app.css / app.js  - title + live date+time header, "Connected devices" panel
 ```
 
 No dongle-control code (`routers/dongle.py`, `services/modem_service.py`,
@@ -225,10 +250,14 @@ No dongle-control code (`routers/dongle.py`, `services/modem_service.py`,
 - Device names in the connected-devices panel: switch from reverse DNS to
   reading the dnsmasq lease file once the Pi runs its own DHCP server -
   see "Status" above for the full reasoning. Decided against mDNS/NetBIOS
-  as an interim fix. (The new `vendor` column is a separate,
-  DHCP-independent improvement already implemented - see "Status".)
+  as an interim fix. (The `vendor` column is a separate, DHCP-independent
+  improvement already implemented - see "Status".)
 - `app/data/oui.tsv` will need occasional manual refreshing as new OUI
   blocks get assigned - see the file's own header for how.
+- **Ping-sweep discovery (`discovery_service.py`) misses devices that
+  block ICMP but still answer ARP.** `arp-scan` would close that gap but
+  needs root/`CAP_NET_RAW` (the service currently doesn't run as root) -
+  revisit if this turns out to matter in practice.
 - Online/offline state and a device-count summary were considered for the
   connected-devices panel and explicitly left out for now - revisit if
   wanted later.

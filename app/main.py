@@ -1,9 +1,12 @@
+import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.routers import network
+from app.services import discovery_service
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -13,7 +16,14 @@ class NoCacheStaticFiles(StaticFiles):
         return response
 
 
-app = FastAPI(title="MetLAN Dashboard")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(discovery_service.run_periodic_sweep())
+    yield
+    task.cancel()
+
+
+app = FastAPI(title="MetLAN Dashboard", lifespan=lifespan)
 
 
 @app.middleware("http")
