@@ -1,16 +1,23 @@
-const CLIENTS_REFRESH_MS = 5000;
+const CLIENTS_REFRESH_MS = 1000;
 
-function formatToday() {
-  return new Date().toLocaleDateString(undefined, {
+function formatNow() {
+  const now = new Date();
+  const date = now.toLocaleDateString(undefined, {
     weekday: "short",
     year: "numeric",
     month: "short",
     day: "numeric",
   });
+  const time = now.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  return `${date}, ${time}`;
 }
 
 function updateDate() {
-  document.getElementById("date").textContent = formatToday();
+  document.getElementById("date").textContent = formatNow();
 }
 
 async function getJSON(url) {
@@ -39,7 +46,7 @@ async function refreshClients() {
 }
 
 updateDate();
-setInterval(updateDate, 60 * 1000);
+setInterval(updateDate, 1000);
 
 refreshClients();
 setInterval(refreshClients, CLIENTS_REFRESH_MS);
