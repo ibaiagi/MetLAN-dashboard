@@ -11,17 +11,18 @@ expose this port outside the LAN.
 
 ## Status
 
-- **Frontend**: header (title + live date+time) plus one panel so far -
-  "Connected devices", listing IP/MAC/device name/vendor for whatever's in
-  the Pi's ARP/neighbour table. Everything else described in context.md
-  section 10 (dongle control, internet reachability, interface
-  throughput, activity log) is still to be built.
-- **Backend**: `app/routers/network.py` + `app/services/network_service.py`
-  + `app/services/vendor_service.py` + `app/services/discovery_service.py`
-  exist right now, backing the connected-devices panel. There is no
-  dongle-control code (ModemManager/`mmcli`) at all currently - it was
-  removed in an earlier reset pending redesign and hasn't been rebuilt
-  yet. `app/config.py` only holds what the network service needs
+- **Frontend**: header (title + live date+time), a tab switcher, and two
+  panels - "Devices" (connected-devices table) and "Statistics"
+  (interface throughput). Everything else described in context.md
+  section 10 (dongle control, internet reachability, activity log) is
+  still to be built.
+- **Backend**: `app/routers/network.py` + `app/routers/stats.py` +
+  `app/services/network_service.py` + `app/services/vendor_service.py` +
+  `app/services/discovery_service.py` + `app/services/stats_service.py`
+  exist right now, backing those two panels. There is no dongle-control
+  code (ModemManager/`mmcli`) at all currently - it was removed in an
+  earlier reset pending redesign and hasn't been rebuilt yet.
+  `app/config.py` only holds what the network/stats services need
   (`LAN_INTERFACES`).
 - The connected-devices list will be mostly empty until DHCP/NAT
   (nftables) is configured on this Pi - that's expected, not a bug, it's
@@ -78,6 +79,29 @@ expose this port outside the LAN.
   security-conscious devices. `arp-scan` would close that gap too, at
   the cost of needing root/`CAP_NET_RAW` - not done for now, see "Known
   open points."
+- **New: a "Statistics" tab, next to "Devices", showing live LAN
+  interface throughput.** `app/services/stats_service.py` reads
+  cumulative rx/tx byte counters per interface via `psutil` (already a
+  dependency), and `GET /api/stats/throughput` returns those raw
+  counters plus a timestamp - it deliberately doesn't compute a rate
+  server-side. `app.js` polls it every second and derives KB/s or MB/s
+  from the delta between two consecutive polls (same pattern as
+  everything else here: dumb/stateless backend, frontend does the
+  polling-based math). The tab switcher itself is plain show/hide with
+  `[hidden]` - no routing, no page reload, single `index.html` still.
+- **New: a "System" card, below "Interface throughput" in the Statistics
+  tab, showing CPU usage and board temperature(s).** `GET
+  /api/stats/system` returns overall + per-core CPU percent (from
+  `psutil.cpu_percent`) and every temperature sensor `psutil` can find
+  (`psutil.sensors_temperatures()`) - on a Pi 4 that's normally just the
+  SoC's own thermal zone, labeled something like `cpu_thermal`; if a HAT
+  or other add-on exposes more sensors, they show up automatically, no
+  code change needed. Degrades to an empty `temperatures` list (shown as
+  "Not available" in the UI) if the platform doesn't support it at all,
+  rather than erroring. **Explicitly out of scope for now: dongle/modem
+  stats (signal, data usage, WAN bandwidth)** - there's no dongle
+  connected to this Pi yet, so that's on standby until the dongle-control
+  rebuild happens; see "Known open points."
 - Static files *and* API responses are served with `Cache-Control:
   no-store` (see `app/main.py`) - a normal browser reload always picks up
   a change, no incognito/cache-clearing needed.
@@ -218,6 +242,8 @@ Roughly in the order to check them:
 | Endpoint | Method | Purpose |
 |---|---|---|
 | `/api/network/clients` | GET | Connected devices from the ARP/neighbour table: `{"clients": [{"ip", "mac", "name", "vendor"}]}` (`name` is best-effort reverse-DNS, often null; `vendor` is a local MAC-OUI lookup, works regardless of DHCP - see "Status" above for both. The ARP table itself is kept warm by a background ping sweep - see "Status".) |
+| `/api/stats/throughput` | GET | Per-interface cumulative byte counters: `{"interfaces": [{"interface", "rx_bytes", "tx_bytes", "timestamp"}]}` - raw counters, not a rate; the frontend diffs consecutive polls itself (see "Status"). |
+| `/api/stats/system` | GET | CPU + temperature: `{"cpu_percent", "cpu_percent_per_core": [...], "temperatures": [{"sensor", "current", "high", "critical"}]}`. `temperatures` is whatever `psutil.sensors_temperatures()` finds on the box - on a Pi 4 that's normally just the SoC (`cpu_thermal` / similar label), see "Status". |
 
 ## Project layout
 
@@ -229,12 +255,14 @@ app/
     oui.tsv                    - bundled offline MAC-OUI -> vendor table (see its own header)
   routers/
     network.py                 - /api/network/* endpoints
+    stats.py                   - /api/stats/* endpoints
   services/
     network_service.py         - ip-neigh-based connected-devices lookup, degrades gracefully with no data
     vendor_service.py          - MAC OUI -> vendor name, from app/data/oui.tsv
     discovery_service.py       - background subnet ping sweep, keeps the ARP cache warm
+    stats_service.py           - per-interface rx/tx byte counters + CPU/temperature stats, via psutil
   static/
-    index.html / app.css / app.js  - title + live date+time header, "Connected devices" panel
+    index.html / app.css / app.js  - title + live date+time header, tab switcher, "Devices"/"Statistics" panels
 ```
 
 No dongle-control code (`routers/dongle.py`, `services/modem_service.py`,
@@ -246,7 +274,7 @@ No dongle-control code (`routers/dongle.py`, `services/modem_service.py`,
   rebuilding from scratch - removed in an earlier reset, not yet
   recreated.
 - More frontend panels per context.md section 10: internet reachability,
-  interface throughput, activity log.
+  activity log. (Interface throughput is now done - see "Status".)
 - Device names in the connected-devices panel: switch from reverse DNS to
   reading the dnsmasq lease file once the Pi runs its own DHCP server -
   see "Status" above for the full reasoning. Decided against mDNS/NetBIOS
@@ -265,3 +293,8 @@ No dongle-control code (`routers/dongle.py`, `services/modem_service.py`,
   scope until dongle control (Phase 1) is rebuilt.
 - No auth - matches the v1 decision, revisit if the LAN-trust assumption
   ever changes (backlog, section 10).
+- Dongle/WAN bandwidth stats (total band usage vs. a configured ceiling,
+  to know free bandwidth) - explicitly on standby: no dongle is connected
+  to this Pi yet. Revisit once one exists; will need the dongle's WAN
+  interface name and either a speed-test-derived or manually configured
+  ceiling value.
