@@ -5,8 +5,8 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from app.routers import network
-from app.services import discovery_service
+from app.routers import network, stats
+from app.services import discovery_service, history_service
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -18,9 +18,14 @@ class NoCacheStaticFiles(StaticFiles):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = asyncio.create_task(discovery_service.run_periodic_sweep())
+    history_service.reset_db()
+    tasks = [
+        asyncio.create_task(discovery_service.run_periodic_sweep()),
+        asyncio.create_task(history_service.run_periodic_sampling()),
+    ]
     yield
-    task.cancel()
+    for task in tasks:
+        task.cancel()
 
 
 app = FastAPI(title="MetLAN Dashboard", lifespan=lifespan)
@@ -34,6 +39,7 @@ async def add_no_cache_headers(request, call_next):
 
 
 app.include_router(network.router)
+app.include_router(stats.router)
 
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/", NoCacheStaticFiles(directory=STATIC_DIR, html=True), name="static")

@@ -13,8 +13,13 @@
     <span id="date"></span>
   </header>
 
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="devices">Devices</button>
+    <button class="tab-btn" data-tab="stats">Statistics</button>
+  </nav>
+
   <main>
-    <section class="card" id="clients-card">
+    <section class="card" id="clients-card" data-panel="devices">
       <h2>Connected devices</h2>
       <div class="table-scroll">
         <table id="clients-table">
@@ -24,6 +29,33 @@
           <tbody></tbody>
         </table>
       </div>
+    </section>
+
+    <section class="card" id="stats-card" data-panel="stats" hidden>
+      <h2>Interface throughput</h2>
+      <div class="table-scroll">
+        <table id="stats-table">
+          <thead>
+            <tr><th>Interface</th><th>Download</th><th>Upload</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="charts" id="throughput-charts"></div>
+    </section>
+
+    <section class="card" id="system-card" data-panel="stats" hidden>
+      <h2>System</h2>
+      <div class="table-scroll">
+        <table id="system-table">
+          <thead>
+            <tr><th>Metric</th><th>Value</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="charts" id="cpu-charts"></div>
+      <div class="charts" id="temp-charts"></div>
     </section>
   </main>
 

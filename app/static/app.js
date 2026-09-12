@@ -1,4 +1,11 @@
 const CLIENTS_REFRESH_MS = 1000;
+const STATS_REFRESH_MS = 1000;
+const SYSTEM_REFRESH_MS = 2000;
+
+const THROUGHPUT_HISTORY_CAP = 300;  /* 5 min at 1s/poll, in-memory only */
+const HISTORY_REFRESH_MS = 60000;    /* CPU/temperature history is server-side, sampled once/min */
+
+const CHART_PALETTE = ["#2563eb", "#e8590c", "#2f9e44", "#ae3ec9", "#f08c00", "#0c8599"];
 
 function formatNow() {
   const now = new Date();
@@ -45,8 +52,428 @@ async function refreshClients() {
   }
 }
 
+function formatRate(bytesPerSec) {
+  if (bytesPerSec < 1024) return `${bytesPerSec.toFixed(0)} B/s`;
+  if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
+  return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
+}
+
+function formatTemp(c) {
+  return `${c.toFixed(1)}°C`;
+}
+
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function pushCapped(arr, point, cap) {
+  arr.push(point);
+  if (arr.length > cap) arr.shift();
+}
+
+function toPoints(rows) {
+  return rows.map(([t, v]) => ({ t, v }));
+}
+
+function filterRange(points, settings) {
+  if (settings.startMs != null || settings.endMs != null) {
+    const start = settings.startMs ?? -Infinity;
+    const end = settings.endMs ?? Infinity;
+    return points.filter((p) => p.t >= start && p.t <= end);
+  }
+  if (settings.windowH) {
+    const cutoff = Date.now() - settings.windowH * 3600 * 1000;
+    return points.filter((p) => p.t >= cutoff);
+  }
+  return points;
+}
+
+function nearestPoint(points, t) {
+  let best = null, bestDist = Infinity;
+  for (const p of points) {
+    const d = Math.abs(p.t - t);
+    if (d < bestDist) { bestDist = d; best = p; }
+  }
+  return best;
+}
+
+function formatTimestamp(ms) {
+  return new Date(ms).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+/* key -> {windowH, minV, maxV, startMs, endMs}; null means "auto". 
+Only charts created with opts.controls=true (CPU/temperature) 
+get an entry and on-page inputs. */
+const chartSettings = {};
+
+function wireChartControls(block, key, onChange) {
+  const windowInput = block.querySelector(".ctl-window");
+  const minInput = block.querySelector(".ctl-min");
+  const maxInput = block.querySelector(".ctl-max");
+  const startInput = block.querySelector(".ctl-start");
+  const endInput = block.querySelector(".ctl-end");
+  const resetBtn = block.querySelector(".ctl-reset");
+
+  const apply = () => {
+    const w = parseFloat(windowInput.value);
+    const mn = parseFloat(minInput.value);
+    const mx = parseFloat(maxInput.value);
+    const startMs = startInput.value ? new Date(startInput.value).getTime() : NaN;
+    const endMs = endInput.value ? new Date(endInput.value).getTime() : NaN;
+    chartSettings[key] = {
+      windowH: windowInput.value !== "" && w > 0 ? w : null,
+      minV: minInput.value !== "" && !Number.isNaN(mn) ? mn : null,
+      maxV: maxInput.value !== "" && !Number.isNaN(mx) ? mx : null,
+      startMs: !Number.isNaN(startMs) ? startMs : null,
+      endMs: !Number.isNaN(endMs) ? endMs : null,
+    };
+    onChange();
+  };
+
+  [windowInput, minInput, maxInput, startInput, endInput].forEach((el) =>
+    el.addEventListener("input", apply)
+  );
+  resetBtn.addEventListener("click", () => {
+    windowInput.value = "";
+    minInput.value = "";
+    maxInput.value = "";
+    startInput.value = "";
+    endInput.value = "";
+    apply();
+  });
+}
+
+function wireHover(canvas) {
+  canvas.addEventListener("mousemove", (e) => {
+    const scale = canvas.__scale;
+    if (!scale) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    canvas.__hoverT =
+      mx < scale.padL || mx > rect.width - scale.padR
+        ? null
+        : scale.minT + ((mx - scale.padL) / scale.plotW) * (scale.maxT - scale.minT);
+    if (canvas.__series) drawChart(canvas, canvas.__series, canvas.__opts);
+  });
+  canvas.addEventListener("mouseleave", () => {
+    canvas.__hoverT = null;
+    if (canvas.__series) drawChart(canvas, canvas.__series, canvas.__opts);
+  });
+}
+
+function ensureChartBlock(container, key, opts) {
+  let block = container.querySelector(`[data-key="${key}"]`);
+  if (block) return block;
+  block = document.createElement("div");
+  block.className = "chart-block";
+  block.dataset.key = key;
+
+  const controlsHtml = opts.controls
+    ? `<div class="chart-controls">
+        <span class="chart-controls-group">Y axis</span>
+        <label>Min<input type="number" class="ctl-min" step="any" placeholder="auto"></label>
+        <label>Max<input type="number" class="ctl-max" step="any" placeholder="auto"></label>
+        <span class="chart-controls-group">X axis</span>
+        <label>Window (h)<input type="number" class="ctl-window" step="0.5" min="0" placeholder="auto"></label>
+        <label>Start<input type="datetime-local" class="ctl-start"></label>
+        <label>End<input type="datetime-local" class="ctl-end"></label>
+        <button type="button" class="ctl-reset">Reset</button>
+      </div>`
+    : "";
+  block.innerHTML = `<div class="chart-title"></div>${controlsHtml}<div class="chart-canvas-wrap"><canvas></canvas><div class="chart-tooltip" hidden></div></div><div class="chart-legend"></div>`;
+  container.appendChild(block);
+
+  const canvas = block.querySelector("canvas");
+  canvas.__tooltipEl = block.querySelector(".chart-tooltip");
+  wireHover(canvas);
+
+  if (opts.controls) {
+    chartSettings[key] = { windowH: null, minV: null, maxV: null, startMs: null, endMs: null };
+    wireChartControls(block, key, opts.onChange);
+  }
+  return block;
+}
+
+function drawChart(canvas, series, opts = {}) {
+  canvas.__series = series;
+  canvas.__opts = opts;
+
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const w = rect.width, h = rect.height;
+  if (w === 0 || h === 0) return;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  const points = series.flatMap((s) => s.points);
+  if (points.length < 2) {
+    if (canvas.__tooltipEl) canvas.__tooltipEl.hidden = true;
+    return;
+  }
+
+  const minT = Math.min(...points.map((p) => p.t));
+  const maxT = Math.max(...points.map((p) => p.t));
+  let minV = opts.minV ?? Math.min(...points.map((p) => p.v));
+  let maxV = opts.maxV ?? Math.max(...points.map((p) => p.v));
+  if (maxV - minV < 1e-6) { minV -= 1; maxV += 1; }
+  if (opts.minV === undefined || opts.maxV === undefined) {
+    const pad = (maxV - minV) * 0.1;
+    if (opts.minV === undefined) minV -= pad;
+    if (opts.maxV === undefined) maxV += pad;
+  }
+
+  const fmt = opts.fmt || ((v) => v.toFixed(0));
+  ctx.font = "10px system-ui, sans-serif";
+  const labelMax = fmt(maxV), labelMin = fmt(minV);
+  const padL = Math.max(24, ctx.measureText(labelMax).width, ctx.measureText(labelMin).width) + 8;
+  const padB = 4, padT = 6, padR = 4;
+  const plotW = w - padL - padR, plotH = h - padT - padB;
+
+  const x = (t) => padL + ((t - minT) / (maxT - minT || 1)) * plotW;
+  const y = (v) => padT + plotH - ((v - minV) / (maxV - minV || 1)) * plotH;
+
+  canvas.__scale = { minT, maxT, padL, padR, plotW };
+
+  ctx.strokeStyle = cssVar("--border");
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 0; i <= 2; i++) {
+    const gy = padT + (plotH / 2) * i;
+    ctx.moveTo(padL, gy);
+    ctx.lineTo(w - padR, gy);
+  }
+  ctx.stroke();
+
+  ctx.fillStyle = cssVar("--muted");
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  ctx.fillText(labelMax, padL - 6, padT + 2);
+  ctx.fillText(labelMin, padL - 6, padT + plotH - 2);
+
+  for (const s of series) {
+    if (s.points.length < 2) continue;
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    s.points.forEach((p, i) => {
+      const px = x(p.t), py = y(p.v);
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+  }
+
+  const tooltipEl = canvas.__tooltipEl;
+  if (!tooltipEl) return;
+
+  const hoverT = canvas.__hoverT;
+  const anchorSeries = series.find((s) => s.points.length > 0);
+  const anchor = hoverT != null && anchorSeries && nearestPoint(anchorSeries.points, hoverT);
+  if (!anchor) {
+    tooltipEl.hidden = true;
+    return;
+  }
+
+  const hx = x(anchor.t);
+  ctx.save();
+  ctx.setLineDash([4, 3]);
+  ctx.strokeStyle = cssVar("--muted");
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(hx, padT);
+  ctx.lineTo(hx, padT + plotH);
+  ctx.stroke();
+  ctx.restore();
+
+  const rows = [];
+  for (const s of series) {
+    if (s.points.length === 0) continue;
+    const p = nearestPoint(s.points, anchor.t);
+    ctx.beginPath();
+    ctx.fillStyle = s.color;
+    ctx.arc(x(p.t), y(p.v), 3, 0, Math.PI * 2);
+    ctx.fill();
+    rows.push(`<div class="chart-tooltip-row"><span class="legend-dot" style="background:${s.color}"></span>${s.label}: ${fmt(p.v)}</div>`);
+  }
+
+  tooltipEl.innerHTML = `<div class="chart-tooltip-time">${formatTimestamp(anchor.t)}</div>${rows.join("")}`;
+  tooltipEl.style.left = `${Math.min(Math.max(hx, 46), w - 46)}px`;
+  tooltipEl.hidden = false;
+}
+
+function updateLegend(block, series) {
+  block.querySelector(".chart-legend").innerHTML = series
+    .map((s) => `<span class="legend-item"><span class="legend-dot" style="background:${s.color}"></span>${s.label}</span>`)
+    .join("");
+}
+
+function renderChart(container, key, title, series, opts = {}) {
+  const block = ensureChartBlock(container, key, opts);
+  block.querySelector(".chart-title").textContent = title;
+  drawChart(block.querySelector("canvas"), series, opts);
+  updateLegend(block, series);
+}
+
+let lastStatsSample = null;
+const throughputHistory = {}; /* interface -> {rx: [{t,v}], tx: [{t,v}]} */
+
+async function refreshStats() {
+  const data = await getJSON("/api/stats/throughput");
+  const tbody = document.querySelector("#stats-table tbody");
+  tbody.innerHTML = "";
+
+  if (data.interfaces.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="3" class="empty">No interfaces configured</td></tr>`;
+    return;
+  }
+
+  const prev = lastStatsSample;
+  lastStatsSample = {};
+  const chartsContainer = document.getElementById("throughput-charts");
+
+  for (const s of data.interfaces) {
+    lastStatsSample[s.interface] = s;
+    const p = prev && prev[s.interface];
+    const dt = p ? s.timestamp - p.timestamp : 0;
+    const rxDelta = p ? s.rx_bytes - p.rx_bytes : -1;
+    const txDelta = p ? s.tx_bytes - p.tx_bytes : -1;
+
+    const tr = document.createElement("tr");
+    if (dt <= 0 || rxDelta < 0 || txDelta < 0) {
+      tr.innerHTML = `<td>${s.interface}</td><td colspan="2" class="empty">Measuring...</td>`;
+      tbody.appendChild(tr);
+      continue;
+    }
+
+    const rxRate = rxDelta / dt, txRate = txDelta / dt;
+    tr.innerHTML = `<td>${s.interface}</td><td>${formatRate(rxRate)}</td><td>${formatRate(txRate)}</td>`;
+    tbody.appendChild(tr);
+
+    const hist = throughputHistory[s.interface] || (throughputHistory[s.interface] = { rx: [], tx: [] });
+    const t = Date.now();
+    pushCapped(hist.rx, { t, v: rxRate }, THROUGHPUT_HISTORY_CAP);
+    pushCapped(hist.tx, { t, v: txRate }, THROUGHPUT_HISTORY_CAP);
+
+    renderChart(
+      chartsContainer,
+      s.interface,
+      s.interface,
+      [
+        { label: "Download", color: CHART_PALETTE[0], points: hist.rx },
+        { label: "Upload", color: CHART_PALETTE[1], points: hist.tx },
+      ],
+      { fmt: formatRate, minV: 0 }
+    );
+  }
+}
+
+async function refreshSystem() {
+  const data = await getJSON("/api/stats/system");
+  const tbody = document.querySelector("#system-table tbody");
+  tbody.innerHTML = "";
+
+  const rows = [["CPU (overall)", `${data.cpu_percent.toFixed(0)}%`]];
+  data.cpu_percent_per_core.forEach((pct, i) => {
+    rows.push([`CPU core ${i}`, `${pct.toFixed(0)}%`]);
+  });
+
+  if (data.temperatures.length === 0) {
+    rows.push(["Temperature", "Not available"]);
+  } else {
+    for (const t of data.temperatures) {
+      const extra = t.high != null ? ` (high: ${formatTemp(t.high)})` : "";
+      rows.push([t.sensor, `${formatTemp(t.current)}${extra}`]);
+    }
+  }
+
+  for (const [label, value] of rows) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${label}</td><td>${value}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+let latestHistory = { cpu: [], temperatures: {} };
+
+const DEFAULT_SETTINGS = { windowH: null, minV: null, maxV: null, startMs: null, endMs: null };
+
+function rangeLabel(settings) {
+  if (settings.startMs != null || settings.endMs != null) return "custom range";
+  if (settings.windowH) return `${settings.windowH}h`;
+  return "auto";
+}
+
+function renderCpuChart() {
+  const settings = chartSettings.cpu || DEFAULT_SETTINGS;
+  const points = filterRange(toPoints(latestHistory.cpu), settings);
+  renderChart(
+    document.getElementById("cpu-charts"),
+    "cpu",
+    `CPU usage (${rangeLabel(settings)})`,
+    [{ label: "CPU", color: CHART_PALETTE[0], points }],
+    { fmt: (v) => `${v.toFixed(0)}%`, minV: settings.minV ?? undefined, maxV: settings.maxV ?? undefined, controls: true, onChange: renderCpuChart }
+  );
+}
+
+function renderTempChart() {
+  const sensors = Object.keys(latestHistory.temperatures);
+  if (sensors.length === 0) return;
+  const settings = chartSettings.temp || DEFAULT_SETTINGS;
+  const series = sensors.map((sensor, i) => ({
+    label: sensor,
+    color: CHART_PALETTE[i % CHART_PALETTE.length],
+    points: filterRange(toPoints(latestHistory.temperatures[sensor]), settings),
+  }));
+  renderChart(
+    document.getElementById("temp-charts"),
+    "temp",
+    `Temperature (${rangeLabel(settings)})`,
+    series,
+    { fmt: formatTemp, minV: settings.minV ?? undefined, maxV: settings.maxV ?? undefined, controls: true, onChange: renderTempChart }
+  );
+}
+
+async function refreshHistory() {
+  latestHistory = await getJSON("/api/stats/history");
+  renderCpuChart();
+  renderTempChart();
+}
+
+function initTabs() {
+  document.querySelectorAll(".tab-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      const tab = btn.dataset.tab;
+      document.querySelectorAll("[data-panel]").forEach((panel) => {
+        panel.hidden = panel.dataset.panel !== tab;
+      });
+    });
+  });
+}
+
+initTabs();
+
 updateDate();
 setInterval(updateDate, 1000);
 
 refreshClients();
 setInterval(refreshClients, CLIENTS_REFRESH_MS);
+
+refreshStats();
+setInterval(refreshStats, STATS_REFRESH_MS);
+
+refreshSystem();
+setInterval(refreshSystem, SYSTEM_REFRESH_MS);
+
+refreshHistory();
+setInterval(refreshHistory, HISTORY_REFRESH_MS);
