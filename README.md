@@ -124,21 +124,32 @@ expose this port outside the LAN.
     1-sample/minute resolution (~1440 rows per metric); both the sample
     interval and retention window are configurable via
     `STATS_HISTORY_SAMPLE_INTERVAL_S` / `STATS_HISTORY_RETENTION_HOURS`
-    env vars in `app/config.py`.
-  - **CPU and temperature charts have Window/Min/Max controls** (plain
-    number inputs above each chart, plus a "Reset" button). By default
-    all three are blank, meaning auto: the full fetched window, and the
-    Y-axis auto-fit to whatever the data spans. Typing a "Window (h)"
-    value re-draws that one chart zoomed to just the last N hours;
-    typing Min/Max pins the Y-axis instead of auto-fitting. All of this
-    is applied client-side against the already-fetched history (see
-    `chartSettings`/`renderCpuChart`/`renderTempChart` in `app.js`), so
-    it redraws instantly and doesn't need a new request to the backend -
-    it can't show more than what `/api/stats/history` actually returned,
-    though (i.e. a Window bigger than the server's retention just shows
-    everything available). Settings are per-chart and reset on page
-    reload (not persisted) - that's deliberate, this is a "look at this
-    right now" control, not a saved preference.
+    env vars in `app/config.py`. **The database is wiped at every app
+    startup** (`history_service.reset_db()`, called from `app/main.py`'s
+    lifespan before the sampling task starts) - since the service starts
+    on every Pi boot (see "Running it as a boot service"), history starts
+    fresh each reboot rather than accumulating indefinitely across them.
+    A manual `systemctl restart` (e.g. after deploying new code) resets
+    it too, since there's no way to tell that apart from a real reboot -
+    worth knowing if you restart mid-session to pick up a code change.
+  - **CPU and temperature charts have Y-axis (Min/Max) and X-axis
+    (Window/Start/End) controls** (plain inputs above each chart, plus a
+    "Reset" button). By default everything is blank, meaning auto: the
+    full fetched history, Y-axis auto-fit to whatever the data spans.
+    - **Y axis**: Min/Max number inputs pin the axis instead of
+      auto-fitting (e.g. lock temperature to 20-80°C so it stops jumping
+      around as new samples arrive).
+    - **X axis**: either "Window (h)" (a trailing "last N hours", same
+      as before) or an exact "Start"/"End" date-time range - Start/End
+      wins if both are set. A Window bigger than the server's retention,
+      or a Start/End outside it, just shows whatever's actually available
+      - it can't show more than `/api/stats/history` returned.
+    All of this is applied client-side against the already-fetched
+    history (see `chartSettings`/`filterRange`/`renderCpuChart`/
+    `renderTempChart` in `app.js`), so it redraws instantly with no new
+    request to the backend. Settings are per-chart and reset on page
+    reload (not persisted) - deliberate, this is a "look at this right
+    now" control, not a saved preference.
   - **All charts (throughput, CPU, temperature) show a hover tooltip**:
     moving the mouse over a chart snaps a crosshair to the nearest actual
     sample and shows its exact timestamp plus each series' value at that

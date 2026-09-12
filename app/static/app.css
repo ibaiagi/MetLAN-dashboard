@@ -218,6 +218,27 @@ td.empty {
   font-size: 0.72rem;
 }
 
+.chart-controls input[type="datetime-local"] {
+  width: 150px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.72rem;
+}
+
+.chart-controls-group {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  font-size: 0.65rem;
+}
+
+.chart-controls-group:not(:first-child) {
+  margin-left: 4px;
+}
+
 .chart-controls button {
   appearance: none;
   border: 1px solid var(--border);

@@ -21,6 +21,17 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def reset_db() -> None:
+    """Wipe all samples - called once at app startup, so history starts
+    fresh on every Pi reboot/service restart instead of carrying over."""
+    conn = _connect()
+    try:
+        conn.execute("DELETE FROM samples")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def record_sample() -> None:
     now = time.time()
     data = stats_service.get_system_stats()

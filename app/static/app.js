@@ -2,8 +2,8 @@ const CLIENTS_REFRESH_MS = 1000;
 const STATS_REFRESH_MS = 1000;
 const SYSTEM_REFRESH_MS = 2000;
 
-const THROUGHPUT_HISTORY_CAP = 300;  // 5 min at 1s/poll, in-memory only
-const HISTORY_REFRESH_MS = 60000;    // CPU/temperature history is server-side, sampled once/min
+const THROUGHPUT_HISTORY_CAP = 300;  /* 5 min at 1s/poll, in-memory only */
+const HISTORY_REFRESH_MS = 60000;    /* CPU/temperature history is server-side, sampled once/min */
 
 const CHART_PALETTE = ["#2563eb", "#e8590c", "#2f9e44", "#ae3ec9", "#f08c00", "#0c8599"];
 
@@ -75,10 +75,17 @@ function toPoints(rows) {
   return rows.map(([t, v]) => ({ t, v }));
 }
 
-function filterWindow(points, windowH) {
-  if (!windowH) return points;
-  const cutoff = Date.now() - windowH * 3600 * 1000;
-  return points.filter((p) => p.t >= cutoff);
+function filterRange(points, settings) {
+  if (settings.startMs != null || settings.endMs != null) {
+    const start = settings.startMs ?? -Infinity;
+    const end = settings.endMs ?? Infinity;
+    return points.filter((p) => p.t >= start && p.t <= end);
+  }
+  if (settings.windowH) {
+    const cutoff = Date.now() - settings.windowH * 3600 * 1000;
+    return points.filter((p) => p.t >= cutoff);
+  }
+  return points;
 }
 
 function nearestPoint(points, t) {
@@ -100,35 +107,44 @@ function formatTimestamp(ms) {
   });
 }
 
-// key -> {windowH, minV, maxV}; null means "auto". Only charts created with
-// opts.controls=true (CPU/temperature) get an entry and on-page inputs.
+/* key -> {windowH, minV, maxV, startMs, endMs}; null means "auto". 
+Only charts created with opts.controls=true (CPU/temperature) 
+get an entry and on-page inputs. */
 const chartSettings = {};
 
 function wireChartControls(block, key, onChange) {
   const windowInput = block.querySelector(".ctl-window");
   const minInput = block.querySelector(".ctl-min");
   const maxInput = block.querySelector(".ctl-max");
+  const startInput = block.querySelector(".ctl-start");
+  const endInput = block.querySelector(".ctl-end");
   const resetBtn = block.querySelector(".ctl-reset");
 
   const apply = () => {
     const w = parseFloat(windowInput.value);
     const mn = parseFloat(minInput.value);
     const mx = parseFloat(maxInput.value);
+    const startMs = startInput.value ? new Date(startInput.value).getTime() : NaN;
+    const endMs = endInput.value ? new Date(endInput.value).getTime() : NaN;
     chartSettings[key] = {
       windowH: windowInput.value !== "" && w > 0 ? w : null,
       minV: minInput.value !== "" && !Number.isNaN(mn) ? mn : null,
       maxV: maxInput.value !== "" && !Number.isNaN(mx) ? mx : null,
+      startMs: !Number.isNaN(startMs) ? startMs : null,
+      endMs: !Number.isNaN(endMs) ? endMs : null,
     };
     onChange();
   };
 
-  windowInput.addEventListener("input", apply);
-  minInput.addEventListener("input", apply);
-  maxInput.addEventListener("input", apply);
+  [windowInput, minInput, maxInput, startInput, endInput].forEach((el) =>
+    el.addEventListener("input", apply)
+  );
   resetBtn.addEventListener("click", () => {
     windowInput.value = "";
     minInput.value = "";
     maxInput.value = "";
+    startInput.value = "";
+    endInput.value = "";
     apply();
   });
 }
@@ -160,9 +176,13 @@ function ensureChartBlock(container, key, opts) {
 
   const controlsHtml = opts.controls
     ? `<div class="chart-controls">
-        <label>Window (h)<input type="number" class="ctl-window" step="0.5" min="0" placeholder="auto"></label>
+        <span class="chart-controls-group">Y axis</span>
         <label>Min<input type="number" class="ctl-min" step="any" placeholder="auto"></label>
         <label>Max<input type="number" class="ctl-max" step="any" placeholder="auto"></label>
+        <span class="chart-controls-group">X axis</span>
+        <label>Window (h)<input type="number" class="ctl-window" step="0.5" min="0" placeholder="auto"></label>
+        <label>Start<input type="datetime-local" class="ctl-start"></label>
+        <label>End<input type="datetime-local" class="ctl-end"></label>
         <button type="button" class="ctl-reset">Reset</button>
       </div>`
     : "";
@@ -174,15 +194,12 @@ function ensureChartBlock(container, key, opts) {
   wireHover(canvas);
 
   if (opts.controls) {
-    chartSettings[key] = { windowH: null, minV: null, maxV: null };
+    chartSettings[key] = { windowH: null, minV: null, maxV: null, startMs: null, endMs: null };
     wireChartControls(block, key, opts.onChange);
   }
   return block;
 }
 
-// Plain canvas line chart, no dependencies: auto-scaled Y axis (unless
-// opts.minV/maxV pin it), gridlines, one line per series, hover
-// crosshair + tooltip showing the exact sample timestamp/value.
 function drawChart(canvas, series, opts = {}) {
   canvas.__series = series;
   canvas.__opts = opts;
@@ -307,7 +324,7 @@ function renderChart(container, key, title, series, opts = {}) {
 }
 
 let lastStatsSample = null;
-const throughputHistory = {}; // interface -> {rx: [{t,v}], tx: [{t,v}]}
+const throughputHistory = {}; /* interface -> {rx: [{t,v}], tx: [{t,v}]} */
 
 async function refreshStats() {
   const data = await getJSON("/api/stats/throughput");
@@ -385,24 +402,23 @@ async function refreshSystem() {
   }
 }
 
-// CPU/temperature charts are backed by the server-side history file
-// (app/services/history_service.py) instead of an in-memory buffer, so
-// they survive a page reload and don't need the tab left open for hours.
-// The fetched data is cached so the Window/Min/Max controls can redraw
-// instantly, without waiting for the next poll.
 let latestHistory = { cpu: [], temperatures: {} };
 
-function windowLabel(settings) {
-  return settings.windowH ? `${settings.windowH}h` : "auto";
+const DEFAULT_SETTINGS = { windowH: null, minV: null, maxV: null, startMs: null, endMs: null };
+
+function rangeLabel(settings) {
+  if (settings.startMs != null || settings.endMs != null) return "custom range";
+  if (settings.windowH) return `${settings.windowH}h`;
+  return "auto";
 }
 
 function renderCpuChart() {
-  const settings = chartSettings.cpu || { windowH: null, minV: null, maxV: null };
-  const points = filterWindow(toPoints(latestHistory.cpu), settings.windowH);
+  const settings = chartSettings.cpu || DEFAULT_SETTINGS;
+  const points = filterRange(toPoints(latestHistory.cpu), settings);
   renderChart(
     document.getElementById("cpu-charts"),
     "cpu",
-    `CPU usage (${windowLabel(settings)})`,
+    `CPU usage (${rangeLabel(settings)})`,
     [{ label: "CPU", color: CHART_PALETTE[0], points }],
     { fmt: (v) => `${v.toFixed(0)}%`, minV: settings.minV ?? undefined, maxV: settings.maxV ?? undefined, controls: true, onChange: renderCpuChart }
   );
@@ -411,16 +427,16 @@ function renderCpuChart() {
 function renderTempChart() {
   const sensors = Object.keys(latestHistory.temperatures);
   if (sensors.length === 0) return;
-  const settings = chartSettings.temp || { windowH: null, minV: null, maxV: null };
+  const settings = chartSettings.temp || DEFAULT_SETTINGS;
   const series = sensors.map((sensor, i) => ({
     label: sensor,
     color: CHART_PALETTE[i % CHART_PALETTE.length],
-    points: filterWindow(toPoints(latestHistory.temperatures[sensor]), settings.windowH),
+    points: filterRange(toPoints(latestHistory.temperatures[sensor]), settings),
   }));
   renderChart(
     document.getElementById("temp-charts"),
     "temp",
-    `Temperature (${windowLabel(settings)})`,
+    `Temperature (${rangeLabel(settings)})`,
     series,
     { fmt: formatTemp, minV: settings.minV ?? undefined, maxV: settings.maxV ?? undefined, controls: true, onChange: renderTempChart }
   );

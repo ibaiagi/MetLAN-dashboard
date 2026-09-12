@@ -18,6 +18,7 @@ class NoCacheStaticFiles(StaticFiles):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    history_service.reset_db()
     tasks = [
         asyncio.create_task(discovery_service.run_periodic_sweep()),
         asyncio.create_task(history_service.run_periodic_sampling()),
