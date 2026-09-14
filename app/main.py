@@ -5,7 +5,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from app.routers import network, stats
+from app.routers import modem, network, stats
 from app.services import discovery_service, history_service
 
 
@@ -40,6 +40,7 @@ async def add_no_cache_headers(request, call_next):
 
 app.include_router(network.router)
 app.include_router(stats.router)
+app.include_router(modem.router)
 
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/", NoCacheStaticFiles(directory=STATIC_DIR, html=True), name="static")

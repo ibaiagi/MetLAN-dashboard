@@ -16,6 +16,7 @@
   <nav class="tabs">
     <button class="tab-btn active" data-tab="devices">Devices</button>
     <button class="tab-btn" data-tab="stats">Statistics</button>
+    <button class="tab-btn" data-tab="modem">Modem</button>
   </nav>
 
   <main>
@@ -56,6 +57,27 @@
       </div>
       <div class="charts" id="cpu-charts"></div>
       <div class="charts" id="temp-charts"></div>
+    </section>
+
+    <section class="card" id="modem-card" data-panel="modem" hidden>
+      <h2>Dongle control</h2>
+      <div id="modem-status"></div>
+      <div class="modem-actions">
+        <button type="button" id="modem-enable">Enable</button>
+        <button type="button" id="modem-disable">Disable</button>
+      </div>
+    </section>
+
+    <section class="card" id="modem-log-card" data-panel="modem" hidden>
+      <h2>Action log</h2>
+      <div class="table-scroll">
+        <table id="modem-log-table">
+          <thead>
+            <tr><th>Time</th><th>Action</th><th>Result</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </section>
   </main>
 

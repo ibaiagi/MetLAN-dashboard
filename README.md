@@ -11,19 +11,29 @@ expose this port outside the LAN.
 
 ## Status
 
-- **Frontend**: header (title + live date+time), a tab switcher, and two
-  panels - "Devices" (connected-devices table) and "Statistics"
-  (interface throughput). Everything else described in context.md
-  section 10 (dongle control, internet reachability, activity log) is
-  still to be built.
+- **Frontend**: header (title + live date+time), a tab switcher, and
+  three panels - "Devices" (connected-devices table), "Statistics"
+  (interface throughput + CPU/temperature, with history and charts), and
+  "Modem" (dongle control). Everything else described in context.md
+  section 10 (internet reachability, modem telemetry) is still to be
+  built.
 - **Backend**: `app/routers/network.py` + `app/routers/stats.py` +
-  `app/services/network_service.py` + `app/services/vendor_service.py` +
-  `app/services/discovery_service.py` + `app/services/stats_service.py`
-  exist right now, backing those two panels. There is no dongle-control
-  code (ModemManager/`mmcli`) at all currently - it was removed in an
-  earlier reset pending redesign and hasn't been rebuilt yet.
-  `app/config.py` only holds what the network/stats services need
-  (`LAN_INTERFACES`).
+  `app/routers/modem.py` + their matching `app/services/*.py` modules
+  exist right now, backing those three panels. `app/config.py` holds
+  what the network/stats services need (`LAN_INTERFACES`,
+  `STATS_HISTORY_SAMPLE_INTERVAL_S`, `STATS_HISTORY_RETENTION_HOURS`).
+- **New: dongle control panel (Phase 1, context.md section 2)** -
+  `app/services/modem_service.py` shells out to `mmcli` (no D-Bus
+  library, no `pyserial`): `mmcli -L` finds the modem's index, `mmcli -m
+  <index>` reads its `state:` field, `mmcli -m <index> --enable`/
+  `--disable` toggles the radio. Degrades the same way the other
+  services do when hardware isn't there - **the E3372h-607 hasn't
+  physically arrived yet** (context.md section 4/11), so right now this
+  will show "No modem detected" until it's plugged in and `ModemManager`
+  picks it up; that's expected, not a bug. Every enable/disable attempt
+  (successful or not) is appended to a short **in-memory action log**
+  (last 20, oldest dropped) shown in its own card - like the throughput
+  chart, this resets on restart, nothing is persisted for it.
 - The connected-devices list will be mostly empty until DHCP/NAT
   (nftables) is configured on this Pi - that's expected, not a bug, it's
   just reflecting whatever's already on the wire.
@@ -300,6 +310,9 @@ Roughly in the order to check them:
 | `/api/stats/throughput` | GET | Per-interface cumulative byte counters: `{"interfaces": [{"interface", "rx_bytes", "tx_bytes", "timestamp"}]}` - raw counters, not a rate; the frontend diffs consecutive polls itself (see "Status"). |
 | `/api/stats/system` | GET | CPU + temperature, live snapshot: `{"cpu_percent", "cpu_percent_per_core": [...], "temperatures": [{"sensor", "current", "high", "critical"}]}`. `temperatures` is whatever `psutil.sensors_temperatures()` finds on the box - on a Pi 4 that's normally just the SoC (`cpu_thermal` / similar label), see "Status". |
 | `/api/stats/history` | GET | CPU + temperature, persisted history: `{"cpu": [[timestamp_ms, value], ...], "temperatures": {"<sensor>": [[timestamp_ms, value], ...]}}`. Backed by `app/data/history.db` (SQLite), sampled once/minute server-side - see "Status". |
+| `/api/modem/status` | GET | `{"available", "state"}` - `available` is false if `mmcli` found no modem at all (e.g. dongle not plugged in yet); `state` is ModemManager's own state string (`disabled`, `enabled`, `registered`, `connected`, ...) when a modem is present. |
+| `/api/modem/power` | POST | Query param `enable` (`true`/`false`). Calls `mmcli -m <index> --enable`/`--disable`. Returns `{"ok", "error"}` and appends to the action log either way. |
+| `/api/modem/log` | GET | `{"actions": [{"t", "action", "ok", "detail"}, ...]}`, newest first, last 20 kept - in-memory only, see "Status". |
 
 ## Project layout
 
@@ -313,26 +326,33 @@ app/
   routers/
     network.py                 - /api/network/* endpoints
     stats.py                   - /api/stats/* endpoints
+    modem.py                   - /api/modem/* endpoints
   services/
     network_service.py         - ip-neigh-based connected-devices lookup, degrades gracefully with no data
     vendor_service.py          - MAC OUI -> vendor name, from app/data/oui.tsv
     discovery_service.py       - background subnet ping sweep, keeps the ARP cache warm
     stats_service.py           - per-interface rx/tx byte counters + live CPU/temperature snapshot, via psutil
     history_service.py         - persists CPU/temperature samples to app/data/history.db, prunes old rows
+    modem_service.py           - dongle on/off via mmcli (Phase 1, no GPIO/relay) + in-memory action log
   static/
-    index.html / app.css / app.js  - title + live date+time header, tab switcher, "Devices"/"Statistics" panels
+    index.html / app.css / app.js  - title + live date+time header, tab switcher, "Devices"/"Statistics"/"Modem" panels
 ```
 
-No dongle-control code (`routers/dongle.py`, `services/modem_service.py`,
-`services/relay_service.py`) exists right now - see "Known open points."
+Per context.md's 2026-09-14 repo-structure decision, this repo will also
+grow a top-level folder for the Pi's own system config (nftables
+NAT/DHCP, ModemManager setup, systemd units) - not added yet, since that
+work hasn't started; see "Known open points."
 
 ## Known open points (tracked in context.md, not decided here)
 
-- Dongle control (ModemManager Phase 1, per context.md section 2) needs
-  rebuilding from scratch - removed in an earlier reset, not yet
-  recreated.
+- **Pi system config (nftables NAT/DHCP, ModemManager install/setup)
+  doesn't exist in this repo yet** - decided 2026-09-14 to live here
+  rather than a separate repo (see context.md section 10), but the
+  actual config/scripts haven't been written.
 - More frontend panels per context.md section 10: internet reachability,
-  activity log. (Interface throughput is now done - see "Status".)
+  modem telemetry (signal/operator/data usage). (Interface throughput,
+  CPU/temperature, and dongle on/off control are now done - see
+  "Status".)
 - Device names in the connected-devices panel: switch from reverse DNS to
   reading the dnsmasq lease file once the Pi runs its own DHCP server -
   see "Status" above for the full reasoning. Decided against mDNS/NetBIOS
@@ -348,7 +368,8 @@ No dongle-control code (`routers/dongle.py`, `services/modem_service.py`,
   connected-devices panel and explicitly left out for now - revisit if
   wanted later.
 - Phase 2 relay GPIO pin + NO/NC wiring (context.md section 7) - out of
-  scope until dongle control (Phase 1) is rebuilt.
+  scope for now. Phase 1 (software on/off via `mmcli`, no relay) is done -
+  see "Status".
 - No auth - matches the v1 decision, revisit if the LAN-trust assumption
   ever changes (backlog, section 10).
 - Dongle/WAN bandwidth stats (total band usage vs. a configured ceiling,

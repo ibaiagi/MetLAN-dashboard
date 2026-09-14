@@ -1,9 +1,10 @@
 const CLIENTS_REFRESH_MS = 1000;
 const STATS_REFRESH_MS = 1000;
 const SYSTEM_REFRESH_MS = 2000;
+const MODEM_REFRESH_MS = 3000;
 
-const THROUGHPUT_HISTORY_CAP = 300;  /* 5 min at 1s/poll, in-memory only */
-const HISTORY_REFRESH_MS = 60000;    /* CPU/temperature history is server-side, sampled once/min */
+const THROUGHPUT_HISTORY_CAP = 300;  // 5 min at 1s/poll, in-memory only
+const HISTORY_REFRESH_MS = 60000;    // CPU/temperature history is server-side, sampled once/min
 
 const CHART_PALETTE = ["#2563eb", "#e8590c", "#2f9e44", "#ae3ec9", "#f08c00", "#0c8599"];
 
@@ -75,6 +76,8 @@ function toPoints(rows) {
   return rows.map(([t, v]) => ({ t, v }));
 }
 
+// Start/End (exact range) win over Window (h) (trailing "last N hours")
+// when both are set; with neither, the full fetched history is shown.
 function filterRange(points, settings) {
   if (settings.startMs != null || settings.endMs != null) {
     const start = settings.startMs ?? -Infinity;
@@ -107,9 +110,9 @@ function formatTimestamp(ms) {
   });
 }
 
-/* key -> {windowH, minV, maxV, startMs, endMs}; null means "auto". 
-Only charts created with opts.controls=true (CPU/temperature) 
-get an entry and on-page inputs. */
+// key -> {windowH, minV, maxV, startMs, endMs}; null means "auto". Only
+// charts created with opts.controls=true (CPU/temperature) get an entry
+// and on-page inputs.
 const chartSettings = {};
 
 function wireChartControls(block, key, onChange) {
@@ -200,6 +203,9 @@ function ensureChartBlock(container, key, opts) {
   return block;
 }
 
+// Plain canvas line chart, no dependencies: auto-scaled Y axis (unless
+// opts.minV/maxV pin it), gridlines, one line per series, hover
+// crosshair + tooltip showing the exact sample timestamp/value.
 function drawChart(canvas, series, opts = {}) {
   canvas.__series = series;
   canvas.__opts = opts;
@@ -324,7 +330,7 @@ function renderChart(container, key, title, series, opts = {}) {
 }
 
 let lastStatsSample = null;
-const throughputHistory = {}; /* interface -> {rx: [{t,v}], tx: [{t,v}]} */
+const throughputHistory = {}; // interface -> {rx: [{t,v}], tx: [{t,v}]}
 
 async function refreshStats() {
   const data = await getJSON("/api/stats/throughput");
@@ -402,6 +408,11 @@ async function refreshSystem() {
   }
 }
 
+// CPU/temperature charts are backed by the server-side history file
+// (app/services/history_service.py) instead of an in-memory buffer, so
+// they survive a page reload and don't need the tab left open for hours.
+// The fetched data is cached so the Window/Min/Max controls can redraw
+// instantly, without waiting for the next poll.
 let latestHistory = { cpu: [], temperatures: {} };
 
 const DEFAULT_SETTINGS = { windowH: null, minV: null, maxV: null, startMs: null, endMs: null };
@@ -448,6 +459,35 @@ async function refreshHistory() {
   renderTempChart();
 }
 
+async function refreshModem() {
+  const status = await getJSON("/api/modem/status");
+  const statusEl = document.getElementById("modem-status");
+  statusEl.innerHTML = status.available
+    ? `<p>State: <strong>${status.state || "unknown"}</strong></p>`
+    : `<p class="empty">No modem detected</p>`;
+
+  const log = await getJSON("/api/modem/log");
+  const tbody = document.querySelector("#modem-log-table tbody");
+  tbody.innerHTML = "";
+
+  if (log.actions.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="3" class="empty">No actions yet</td></tr>`;
+    return;
+  }
+
+  for (const a of log.actions) {
+    const result = a.ok ? "OK" : `Failed${a.detail ? ": " + a.detail : ""}`;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${formatTimestamp(a.t)}</td><td>${a.action}</td><td>${result}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+async function toggleModem(enable) {
+  await fetch(`/api/modem/power?enable=${enable}`, { method: "POST" });
+  refreshModem();
+}
+
 function initTabs() {
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -477,3 +517,9 @@ setInterval(refreshSystem, SYSTEM_REFRESH_MS);
 
 refreshHistory();
 setInterval(refreshHistory, HISTORY_REFRESH_MS);
+
+document.getElementById("modem-enable").addEventListener("click", () => toggleModem(true));
+document.getElementById("modem-disable").addEventListener("click", () => toggleModem(false));
+
+refreshModem();
+setInterval(refreshModem, MODEM_REFRESH_MS);
