@@ -2,8 +2,8 @@
 
 Web dashboard for the MetLAN router project (context.md section 10),
 running on the single indoor Raspberry Pi 4. Eventual scope: dongle radio
-control (Phase 1 - software-only via ModemManager, no relay/GPIO - see
-context.md section 2) and network stats (LAN interfaces, internet
+control (Phase 1 - software-only, via the dongle's own HiLink HTTP API -
+see context.md section 2) and network stats (LAN interfaces, internet
 reachability, connected devices).
 
 **No auth planned for v1** (LAN-trust assumption, per context.md). Do not
@@ -23,14 +23,21 @@ expose this port outside the LAN.
   what the network/stats services need (`LAN_INTERFACES`,
   `STATS_HISTORY_SAMPLE_INTERVAL_S`, `STATS_HISTORY_RETENTION_HOURS`).
 - **New: dongle control panel (Phase 1, context.md section 2)** -
-  `app/services/modem_service.py` shells out to `mmcli` (no D-Bus
-  library, no `pyserial`): `mmcli -L` finds the modem's index, `mmcli -m
-  <index>` reads its `state:` field, `mmcli -m <index> --enable`/
-  `--disable` toggles the radio. Degrades the same way the other
-  services do when hardware isn't there - **the E3372h-607 hasn't
-  physically arrived yet** (context.md section 4/11), so right now this
-  will show "No modem detected" until it's plugged in and `ModemManager`
-  picks it up; that's expected, not a bug. Every enable/disable attempt
+  `app/services/modem_service.py` talks to the E3372h-607's own **HiLink
+  HTTP API** (`huawei-lte-api`, `http://192.168.8.1/`), not ModemManager
+  - the dongle ships in HiLink mode and switching it to Stick mode
+  (ModemManager/`mmcli`'s territory) had no confirmed-safe procedure for
+  this exact firmware, so Phase 1 control goes over HTTP instead (see the
+  2026-09-23 note in context.md). `dial_up.mobile_dataswitch()`/
+  `set_mobile_dataswitch()` reads/toggles the radio, `monitoring.status()`
+  gives connection state. **Verified live 2026-09-23 against the actual
+  unit**: no admin password needed at all - both reading status and
+  toggling the radio work unauthenticated - so `HILINK_PASSWORD` is
+  optional (see "Dongle HiLink password" below), only needed if one's
+  ever set on the dongle. If the dongle's unreachable (unplugged, wrong
+  network, or - if a password ever gets set - wrong credentials), this
+  degrades the same way the other services do, showing "No modem
+  detected" - that's expected, not a bug. Every enable/disable attempt
   (successful or not) is appended to a short **in-memory action log**
   (last 20, oldest dropped) shown in its own card - like the throughput
   chart, this resets on restart, nothing is persisted for it.
@@ -184,6 +191,29 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 Then browse to `http://<pi-hostname>.local:8000` from any device on the
 LAN.
 
+### Dongle HiLink password (modem control panel)
+
+The Modem tab talks to the E3372h-607's own HiLink web API (see
+`app/services/modem_service.py`). **The unit in use, as verified live
+2026-09-23, needs no admin password at all** - reading status and
+toggling the radio both work unauthenticated, so there's nothing to
+configure. This section only matters if a password ever gets set on the
+dongle (e.g. via its own web UI at `http://192.168.8.1/`) - if so, **never
+commit it**: put it in a `.env` file in the same directory as `app/`
+(already excluded by `.gitignore`):
+
+```
+HILINK_PASSWORD=<the dongle's HiLink admin password>
+```
+
+Running with `uvicorn` directly (above) picks this up automatically if
+you `export $(cat .env | xargs)` first, or use a tool like `python-dotenv`
+in your own shell. Running as the systemd service (below) picks it up
+automatically via the unit's `EnvironmentFile=` line - no extra step
+needed there. Without this password set, the Modem tab just shows "No
+modem detected" (same graceful-degradation behavior as before) rather
+than erroring.
+
 ## Running it as a boot service
 
 A systemd unit is included (`metlan-gui.service`). **Double-check the
@@ -212,6 +242,14 @@ re-run it after every reboot.
 
   ```bash
   sudo systemctl daemon-reload
+  sudo systemctl restart metlan-gui
+  ```
+
+- **Created or edited the `.env` file** (e.g. `HILINK_PASSWORD`): no
+  `daemon-reload` needed, just a restart - `EnvironmentFile=` is read fresh
+  each time the process starts:
+
+  ```bash
   sudo systemctl restart metlan-gui
   ```
 
@@ -310,8 +348,8 @@ Roughly in the order to check them:
 | `/api/stats/throughput` | GET | Per-interface cumulative byte counters: `{"interfaces": [{"interface", "rx_bytes", "tx_bytes", "timestamp"}]}` - raw counters, not a rate; the frontend diffs consecutive polls itself (see "Status"). |
 | `/api/stats/system` | GET | CPU + temperature, live snapshot: `{"cpu_percent", "cpu_percent_per_core": [...], "temperatures": [{"sensor", "current", "high", "critical"}]}`. `temperatures` is whatever `psutil.sensors_temperatures()` finds on the box - on a Pi 4 that's normally just the SoC (`cpu_thermal` / similar label), see "Status". |
 | `/api/stats/history` | GET | CPU + temperature, persisted history: `{"cpu": [[timestamp_ms, value], ...], "temperatures": {"<sensor>": [[timestamp_ms, value], ...]}}`. Backed by `app/data/history.db` (SQLite), sampled once/minute server-side - see "Status". |
-| `/api/modem/status` | GET | `{"available", "state"}` - `available` is false if `mmcli` found no modem at all (e.g. dongle not plugged in yet); `state` is ModemManager's own state string (`disabled`, `enabled`, `registered`, `connected`, ...) when a modem is present. |
-| `/api/modem/power` | POST | Query param `enable` (`true`/`false`). Calls `mmcli -m <index> --enable`/`--disable`. Returns `{"ok", "error"}` and appends to the action log either way. |
+| `/api/modem/status` | GET | `{"available", "state"}` - `available` is false if the HiLink API couldn't be reached (dongle unplugged, wrong network, or - if a password is ever set on it - wrong credentials); `state` is one of `disabled`, `connecting`, `connected`, `disconnecting`, `connect failed`, or `unknown (<code>)` for an unmapped HiLink `ConnectionStatus` code, when reachable. No SIM inserted still reports `available: true`, `state: "disconnected"` - that's the dongle correctly reporting it has nothing to connect to. |
+| `/api/modem/power` | POST | Query param `enable` (`true`/`false`). Calls the HiLink API's `dial_up.set_mobile_dataswitch`. Returns `{"ok", "error"}` and appends to the action log either way. |
 | `/api/modem/log` | GET | `{"actions": [{"t", "action", "ok", "detail"}, ...]}`, newest first, last 20 kept - in-memory only, see "Status". |
 
 ## Project layout
@@ -319,7 +357,7 @@ Roughly in the order to check them:
 ```
 app/
   main.py                    - FastAPI app: lifespan-started ping sweep + history sampler + no-cache middleware + static mount + routers
-  config.py                   - LAN_INTERFACES, STATS_HISTORY_SAMPLE_INTERVAL_S, STATS_HISTORY_RETENTION_HOURS
+  config.py                   - LAN_INTERFACES, STATS_HISTORY_SAMPLE_INTERVAL_S, STATS_HISTORY_RETENTION_HOURS, HILINK_HOST/HILINK_USER/HILINK_PASSWORD
   data/
     oui.tsv                    - bundled offline MAC-OUI -> vendor table (see its own header)
     history.db                 - runtime CPU/temperature history (SQLite, gitignored, created on first run)
@@ -333,22 +371,23 @@ app/
     discovery_service.py       - background subnet ping sweep, keeps the ARP cache warm
     stats_service.py           - per-interface rx/tx byte counters + live CPU/temperature snapshot, via psutil
     history_service.py         - persists CPU/temperature samples to app/data/history.db, prunes old rows
-    modem_service.py           - dongle on/off via mmcli (Phase 1, no GPIO/relay) + in-memory action log
+    modem_service.py           - dongle on/off via the HiLink HTTP API (Phase 1, no GPIO/relay) + in-memory action log
   static/
     index.html / app.css / app.js  - title + live date+time header, tab switcher, "Devices"/"Statistics"/"Modem" panels
 ```
 
 Per context.md's 2026-09-14 repo-structure decision, this repo will also
 grow a top-level folder for the Pi's own system config (nftables
-NAT/DHCP, ModemManager setup, systemd units) - not added yet, since that
-work hasn't started; see "Known open points."
+NAT/DHCP, systemd units) - not added yet, since that work hasn't started;
+see "Known open points."
 
 ## Known open points (tracked in context.md, not decided here)
 
-- **Pi system config (nftables NAT/DHCP, ModemManager install/setup)
-  doesn't exist in this repo yet** - decided 2026-09-14 to live here
-  rather than a separate repo (see context.md section 10), but the
-  actual config/scripts haven't been written.
+- **Pi system config (nftables NAT/DHCP) doesn't exist in this repo
+  yet** - decided 2026-09-14 to live here rather than a separate repo
+  (see context.md section 10), but the actual config/scripts haven't
+  been written. (ModemManager is no longer part of this project's plan
+  for the dongle - see the 2026-09-23 note in context.md.)
 - More frontend panels per context.md section 10: internet reachability,
   modem telemetry (signal/operator/data usage). (Interface throughput,
   CPU/temperature, and dongle on/off control are now done - see
@@ -368,7 +407,8 @@ work hasn't started; see "Known open points."
   connected-devices panel and explicitly left out for now - revisit if
   wanted later.
 - Phase 2 relay GPIO pin + NO/NC wiring (context.md section 7) - out of
-  scope for now. Phase 1 (software on/off via `mmcli`, no relay) is done -
+  scope for now. Phase 1 (software on/off via the dongle's HiLink HTTP
+  API, no relay) is done -
   see "Status".
 - No auth - matches the v1 decision, revisit if the LAN-trust assumption
   ever changes (backlog, section 10).

@@ -1,53 +1,58 @@
-"""Dongle on/off control via ModemManager's mmcli (Phase 1, context.md
-section 2: software radio disable only, no relay/GPIO), plus a short
-in-memory action log - resets on restart, same as everything else here."""
-import subprocess
+"""Dongle on/off control via the E3372h-607's own HiLink HTTP API
+(huawei-lte-api) - the dongle ships in HiLink mode and there's no
+confirmed-safe way to switch this exact firmware to ModemManager-compatible
+Stick mode, so Phase 1 control goes through HiLink's built-in web API
+instead (context.md, 2026-09-23 update). Verified live against the actual
+unit: no admin password needed on this one for either reading status or
+toggling dataswitch, but HILINK_PASSWORD is still supported (optional) in
+case that's ever set. Same in-memory action log as before - resets on
+restart."""
 import time
+
+from huawei_lte_api.Client import Client
+from huawei_lte_api.Connection import Connection
+
+from app.config import HILINK_HOST, HILINK_USER, HILINK_PASSWORD
 
 _ACTION_LOG_CAP = 20
 _actions: list[dict] = []
 
+_CONNECTION_STATUS = {
+    "900": "connecting",
+    "901": "connected",
+    "902": "disconnected",
+    "903": "disconnecting",
+    "904": "connect failed",
+}
 
-def _run_mmcli(args: list[str]) -> tuple[bool, str]:
-    try:
-        result = subprocess.run(
-            ["mmcli", *args], capture_output=True, text=True, timeout=10
+
+def _connect() -> Connection:
+    # huawei_lte_api.Connection starts an authenticated login session as
+    # soon as a username is passed at all, even with no password - only
+    # pass credentials when a password is actually set, so this stays
+    # anonymous (verified working) until one is.
+    if HILINK_PASSWORD:
+        return Connection(
+            f"http://{HILINK_HOST}/",
+            username=HILINK_USER,
+            password=HILINK_PASSWORD,
+            timeout=5,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        return False, str(exc)
-    if result.returncode != 0:
-        return False, (result.stderr or result.stdout).strip()
-    return True, result.stdout
-
-
-def _find_modem_index() -> str | None:
-    ok, out = _run_mmcli(["-L"])
-    if not ok:
-        return None
-    for line in out.splitlines():
-        line = line.strip()
-        if line.startswith("/org/freedesktop/ModemManager1/Modem/"):
-            return line.rsplit("/", 1)[1].split()[0]
-    return None
-
-
-def _parse_state(mmcli_output: str) -> str | None:
-    for line in mmcli_output.splitlines():
-        line = line.strip()
-        if "|" in line:
-            line = line.split("|", 1)[1].strip()
-        if line.startswith("state:"):
-            return line.split(":", 1)[1].strip()
-    return None
+    return Connection(f"http://{HILINK_HOST}/", timeout=5)
 
 
 def get_status() -> dict:
-    index = _find_modem_index()
-    if index is None:
+    try:
+        with _connect() as connection:
+            client = Client(connection)
+            dataswitch = client.dial_up.mobile_dataswitch()
+            if str(dataswitch.get("dataswitch")) == "0":
+                return {"available": True, "state": "disabled"}
+            status = client.monitoring.status()
+            code = str(status.get("ConnectionStatus"))
+            return {"available": True, "state": _CONNECTION_STATUS.get(code, f"unknown ({code})")}
+    except Exception:
         return {"available": False, "state": None}
-
-    ok, out = _run_mmcli(["-m", index])
-    return {"available": True, "state": _parse_state(out) if ok else None}
 
 
 def _log_action(action: str, ok: bool, detail: str = "") -> None:
@@ -58,14 +63,15 @@ def _log_action(action: str, ok: bool, detail: str = "") -> None:
 
 def set_power(enable: bool) -> dict:
     action = "enable" if enable else "disable"
-    index = _find_modem_index()
-    if index is None:
-        _log_action(action, False, "no modem detected")
-        return {"ok": False, "error": "No modem detected"}
-
-    ok, out = _run_mmcli(["-m", index, f"--{action}"])
-    _log_action(action, ok, "" if ok else out)
-    return {"ok": ok, "error": None if ok else out}
+    try:
+        with _connect() as connection:
+            client = Client(connection)
+            client.dial_up.set_mobile_dataswitch(dataswitch=1 if enable else 0)
+        _log_action(action, True)
+        return {"ok": True, "error": None}
+    except Exception as exc:
+        _log_action(action, False, str(exc))
+        return {"ok": False, "error": str(exc)}
 
 
 def get_action_log() -> list[dict]:
