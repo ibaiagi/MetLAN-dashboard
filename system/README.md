@@ -12,8 +12,9 @@ Three pieces, all standard Debian/Raspberry Pi OS packages (`nftables`,
 
 | File | Purpose | Installs to |
 |---|---|---|
-| `nftables.conf` | NAT (masquerade out `eth1`) + forwarding rules (`eth0` <-> `eth1`) | `/etc/nftables.conf` |
+| `nftables.conf` | NAT (masquerade out `eth1`) + forwarding rules (`eth0` <-> `eth1`) + TCP MSS clamp (avoids cellular-MTU blackholes) | `/etc/nftables.conf` |
 | `dnsmasq-metlan.conf` | DHCP + DNS server on `eth0` | `/etc/dnsmasq.d/metlan.conf` |
+| `dnsmasq-override.conf` | Restart-on-failure for dnsmasq (none by default - see "If something doesn't work") | `/etc/systemd/system/dnsmasq.service.d/override.conf` |
 | `60-metlan-forward.conf` | `net.ipv4.ip_forward=1`, otherwise the kernel drops forwarded packets no matter what nftables says | `/etc/sysctl.d/60-metlan-forward.conf` |
 
 ## Topology this assumes
@@ -95,6 +96,9 @@ don't enable them at boot until you're sure.
    sudo systemctl restart nftables
 
    sudo cp dnsmasq-metlan.conf /etc/dnsmasq.d/metlan.conf
+   sudo mkdir -p /etc/systemd/system/dnsmasq.service.d
+   sudo cp dnsmasq-override.conf /etc/systemd/system/dnsmasq.service.d/override.conf
+   sudo systemctl daemon-reload
    sudo systemctl enable --now dnsmasq
    sudo systemctl restart dnsmasq
    ```
@@ -129,6 +133,23 @@ don't enable them at boot until you're sure.
 - **Dashboard unreachable after this**: it moved from
   `http://192.168.1.21:8000` to `http://10.42.0.1:8000` - see "Topology
   this assumes" above.
+- **Ping/raw IPs work, but nothing by domain name does (browser hangs,
+  `nslookup` times out)** - confirmed 2026-09-23: this is dnsmasq, not the
+  mobile connection. `sudo systemctl status dnsmasq --no-pager` - if it
+  shows `failed` with `unknown interface eth0` in the log, dnsmasq lost a
+  startup race against `eth0` coming up (NetworkManager) and, without
+  `dnsmasq-override.conf` installed, never retries on its own - it can sit
+  dead for hours with everything else looking fine. `bind-dynamic` in
+  `dnsmasq-metlan.conf` (not `bind-interfaces`) and the restart-on-failure
+  override both exist specifically to stop this recurring; `sudo
+  systemctl restart dnsmasq` fixes it immediately either way.
+- **A page loads by IP but a real site (e.g. video-heavy ones) hangs** -
+  classic cellular-MTU blackhole: a large TCP packet gets silently dropped
+  instead of fragmented, because the ICMP "too big" message that's
+  supposed to trigger fragmentation doesn't make it back either. The TCP
+  MSS clamp in `nftables.conf` (`tcp flags syn tcp option maxseg size set
+  rt mtu`) exists specifically for this - confirm it's actually loaded
+  with `sudo nft list ruleset` (look for the `inet mangle` table).
 
 ## Known open points
 
@@ -138,8 +159,12 @@ don't enable them at boot until you're sure.
     "Known open points").
   - `dnsmasq-metlan.conf` doesn't set a custom lease file path, so it uses
     the package default above.
-- Not yet load-tested with an actual SIM/live mobile connection - blocked
-  on that, same as the RF-verification open point in `context.md`.
+- **Live-tested end-to-end 2026-09-23** with an Izarkom SIM (testbench PC
+  -> Pi NAT/DHCP -> dongle -> mobile network -> real internet, HTTPS
+  included) - see `context.md`'s 2026-09-23 note for the full trail
+  (SIM PIN, APN profile, manual `dial()`, dnsmasq crash, MTU blackhole -
+  all found and fixed this session). Not yet tested under sustained/heavy
+  load, or outdoors at the actual install site.
 - No DHCP reservations/static leases configured - fine for a one-PC
   testbench, revisit if the testbench grows more devices that need a
   stable address.

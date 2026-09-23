@@ -7,7 +7,13 @@ unit: no admin password needed on this one for either reading status or
 toggling dataswitch, but HILINK_PASSWORD is still supported (optional) in
 case that's ever set. A PIN-locked SIM shows as undetected until unlocked -
 HILINK_PIN (optional) gets sent via client.pin.operate() on every connect.
-Same in-memory action log as before - resets on restart."""
+This unit's dial-up ConnectMode is manual, not auto (confirmed live
+2026-09-23) - enabling the radio alone doesn't dial, so set_power(True)
+also calls dial_up.dial(). The APN profile itself (Izarkom: APN "internet",
+blank user/pass, PAP) had to be set once by hand via the dongle's own
+HiLink web page - huawei-lte-api has no clean method for that (it needs
+RSA-encrypted XML the web UI's own JS handles), so it's not something this
+code manages. Same in-memory action log as before - resets on restart."""
 import time
 
 from huawei_lte_api.Client import Client
@@ -83,6 +89,15 @@ def set_power(enable: bool) -> dict:
             client = Client(connection)
             _unlock_pin(client)
             client.dial_up.set_mobile_dataswitch(dataswitch=1 if enable else 0)
+            if enable:
+                # ConnectMode is manual on this unit - dataswitch alone
+                # registers on the network but never dials. Best-effort:
+                # dial() erroring (e.g. already connecting) shouldn't fail
+                # the whole toggle.
+                try:
+                    client.dial_up.dial()
+                except Exception:
+                    pass
         _log_action(action, True)
         return {"ok": True, "error": None}
     except Exception as exc:
