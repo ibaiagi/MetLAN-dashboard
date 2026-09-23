@@ -5,8 +5,9 @@ After=network.target
 [Service]
 Type=simple
 User=metlan
-WorkingDirectory=/home/metlan/metlan-gui
-ExecStart=/home/metlan/metlan-gui/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+WorkingDirectory=/home/metlan/MetLAN-dashboard
+EnvironmentFile=-/home/metlan/MetLAN-dashboard/.env
+ExecStart=/home/metlan/MetLAN-dashboard/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 Restart=on-failure
 RestartSec=3
 
