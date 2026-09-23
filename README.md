@@ -191,28 +191,33 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 Then browse to `http://<pi-hostname>.local:8000` from any device on the
 LAN.
 
-### Dongle HiLink password (modem control panel)
+### Dongle HiLink password and SIM PIN (modem control panel)
 
 The Modem tab talks to the E3372h-607's own HiLink web API (see
 `app/services/modem_service.py`). **The unit in use, as verified live
 2026-09-23, needs no admin password at all** - reading status and
 toggling the radio both work unauthenticated, so there's nothing to
-configure. This section only matters if a password ever gets set on the
-dongle (e.g. via its own web UI at `http://192.168.8.1/`) - if so, **never
-commit it**: put it in a `.env` file in the same directory as `app/`
-(already excluded by `.gitignore`):
+configure there. This section only matters if a password ever gets set on
+the dongle (e.g. via its own web UI at `http://192.168.8.1/`), or if the
+inserted SIM has PIN lock enabled - **confirmed 2026-09-23: a PIN-locked
+SIM shows up as completely undetected (`SimStatus: 0`) until unlocked**,
+easy to mistake for a hardware/seating problem. Either value goes in a
+`.env` file in the same directory as `app/` (already excluded by
+`.gitignore`) - **never commit it**:
 
 ```
 HILINK_PASSWORD=<the dongle's HiLink admin password>
+HILINK_PIN=<the inserted SIM's PIN, if it has one>
 ```
 
 Running with `uvicorn` directly (above) picks this up automatically if
 you `export $(cat .env | xargs)` first, or use a tool like `python-dotenv`
 in your own shell. Running as the systemd service (below) picks it up
 automatically via the unit's `EnvironmentFile=` line - no extra step
-needed there. Without this password set, the Modem tab just shows "No
-modem detected" (same graceful-degradation behavior as before) rather
-than erroring.
+needed there. Without `HILINK_PIN` set on a PIN-locked SIM, the Modem tab
+just shows "No modem detected" (same graceful-degradation behavior as
+before) rather than erroring - it's worth checking this setting before
+assuming a hardware fault.
 
 ## Running it as a boot service
 
@@ -357,7 +362,7 @@ Roughly in the order to check them:
 ```
 app/
   main.py                    - FastAPI app: lifespan-started ping sweep + history sampler + no-cache middleware + static mount + routers
-  config.py                   - LAN_INTERFACES, STATS_HISTORY_SAMPLE_INTERVAL_S, STATS_HISTORY_RETENTION_HOURS, HILINK_HOST/HILINK_USER/HILINK_PASSWORD
+  config.py                   - LAN_INTERFACES, STATS_HISTORY_SAMPLE_INTERVAL_S, STATS_HISTORY_RETENTION_HOURS, HILINK_HOST/HILINK_USER/HILINK_PASSWORD/HILINK_PIN
   data/
     oui.tsv                    - bundled offline MAC-OUI -> vendor table (see its own header)
     history.db                 - runtime CPU/temperature history (SQLite, gitignored, created on first run)

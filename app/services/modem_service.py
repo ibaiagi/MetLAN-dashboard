@@ -5,14 +5,15 @@ Stick mode, so Phase 1 control goes through HiLink's built-in web API
 instead (context.md, 2026-09-23 update). Verified live against the actual
 unit: no admin password needed on this one for either reading status or
 toggling dataswitch, but HILINK_PASSWORD is still supported (optional) in
-case that's ever set. Same in-memory action log as before - resets on
-restart."""
+case that's ever set. A PIN-locked SIM shows as undetected until unlocked -
+HILINK_PIN (optional) gets sent via client.pin.operate() on every connect.
+Same in-memory action log as before - resets on restart."""
 import time
 
 from huawei_lte_api.Client import Client
 from huawei_lte_api.Connection import Connection
 
-from app.config import HILINK_HOST, HILINK_USER, HILINK_PASSWORD
+from app.config import HILINK_HOST, HILINK_USER, HILINK_PASSWORD, HILINK_PIN
 
 _ACTION_LOG_CAP = 20
 _actions: list[dict] = []
@@ -41,10 +42,24 @@ def _connect() -> Connection:
     return Connection(f"http://{HILINK_HOST}/", timeout=5)
 
 
+def _unlock_pin(client: Client) -> None:
+    # Best-effort, idempotent: only relevant if the SIM actually needs a
+    # PIN. Errors here (already unlocked, no PIN needed, wrong PIN) are
+    # swallowed on purpose - the real state still shows up correctly in
+    # whatever status/dataswitch call follows this.
+    if not HILINK_PIN:
+        return
+    try:
+        client.pin.operate(operate_type="0", current_pin=HILINK_PIN)
+    except Exception:
+        pass
+
+
 def get_status() -> dict:
     try:
         with _connect() as connection:
             client = Client(connection)
+            _unlock_pin(client)
             dataswitch = client.dial_up.mobile_dataswitch()
             if str(dataswitch.get("dataswitch")) == "0":
                 return {"available": True, "state": "disabled"}
@@ -66,6 +81,7 @@ def set_power(enable: bool) -> dict:
     try:
         with _connect() as connection:
             client = Client(connection)
+            _unlock_pin(client)
             client.dial_up.set_mobile_dataswitch(dataswitch=1 if enable else 0)
         _log_action(action, True)
         return {"ok": True, "error": None}
