@@ -132,10 +132,87 @@ th {
   letter-spacing: 0.02em;
 }
 
-td.empty {
+td.empty, .empty {
   color: var(--muted);
   font-style: italic;
   white-space: normal;
+}
+
+#dongle-status p,
+#modem-status p,
+#usb-power-status p {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.hint {
+  margin: 0 0 10px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.modem-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.modem-actions button {
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.modem-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+#dongle-on,
+#modem-enable,
+#usb-power-enable {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+#dongle-off,
+#modem-disable,
+#usb-power-disable {
+  background: var(--card-bg);
+  color: var(--text);
+}
+
+#advanced-card summary {
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+#advanced-card[open] summary {
+  margin-bottom: 10px;
+}
+
+.advanced-block + .advanced-block {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.advanced-block h3 {
+  font-size: 0.75rem;
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
 }
 
 .charts {

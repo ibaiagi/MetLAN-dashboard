@@ -1,9 +1,15 @@
 const CLIENTS_REFRESH_MS = 1000;
 const STATS_REFRESH_MS = 1000;
 const SYSTEM_REFRESH_MS = 2000;
+const MODEM_REFRESH_MS = 3000;
+const USB_POWER_REFRESH_MS = 5000; // shells out to uhubctl, poll less aggressively than modem status
+const ACTION_LOG_REFRESH_MS = 5000;
+const DONGLE_REFRESH_MS = 3000;
 
-const THROUGHPUT_HISTORY_CAP = 300;  /* 5 min at 1s/poll, in-memory only */
-const HISTORY_REFRESH_MS = 60000;    /* CPU/temperature history is server-side, sampled once/min */
+const DONGLE_LABELS = { on: "ON", connecting: "Connecting…", off: "OFF", unknown: "Unknown" };
+
+const THROUGHPUT_HISTORY_CAP = 300;  // 5 min at 1s/poll, in-memory only
+const HISTORY_REFRESH_MS = 60000;    // CPU/temperature history is server-side, sampled once/min
 
 const CHART_PALETTE = ["#2563eb", "#e8590c", "#2f9e44", "#ae3ec9", "#f08c00", "#0c8599"];
 
@@ -75,6 +81,8 @@ function toPoints(rows) {
   return rows.map(([t, v]) => ({ t, v }));
 }
 
+// Start/End (exact range) win over Window (h) (trailing "last N hours")
+// when both are set; with neither, the full fetched history is shown.
 function filterRange(points, settings) {
   if (settings.startMs != null || settings.endMs != null) {
     const start = settings.startMs ?? -Infinity;
@@ -107,9 +115,9 @@ function formatTimestamp(ms) {
   });
 }
 
-/* key -> {windowH, minV, maxV, startMs, endMs}; null means "auto". 
-Only charts created with opts.controls=true (CPU/temperature) 
-get an entry and on-page inputs. */
+// key -> {windowH, minV, maxV, startMs, endMs}; null means "auto". Only
+// charts created with opts.controls=true (CPU/temperature) get an entry
+// and on-page inputs.
 const chartSettings = {};
 
 function wireChartControls(block, key, onChange) {
@@ -200,6 +208,9 @@ function ensureChartBlock(container, key, opts) {
   return block;
 }
 
+// Plain canvas line chart, no dependencies: auto-scaled Y axis (unless
+// opts.minV/maxV pin it), gridlines, one line per series, hover
+// crosshair + tooltip showing the exact sample timestamp/value.
 function drawChart(canvas, series, opts = {}) {
   canvas.__series = series;
   canvas.__opts = opts;
@@ -324,7 +335,7 @@ function renderChart(container, key, title, series, opts = {}) {
 }
 
 let lastStatsSample = null;
-const throughputHistory = {}; /* interface -> {rx: [{t,v}], tx: [{t,v}]} */
+const throughputHistory = {}; // interface -> {rx: [{t,v}], tx: [{t,v}]}
 
 async function refreshStats() {
   const data = await getJSON("/api/stats/throughput");
@@ -402,6 +413,11 @@ async function refreshSystem() {
   }
 }
 
+// CPU/temperature charts are backed by the server-side history file
+// (app/services/history_service.py) instead of an in-memory buffer, so
+// they survive a page reload and don't need the tab left open for hours.
+// The fetched data is cached so the Window/Min/Max controls can redraw
+// instantly, without waiting for the next poll.
 let latestHistory = { cpu: [], temperatures: {} };
 
 const DEFAULT_SETTINGS = { windowH: null, minV: null, maxV: null, startMs: null, endMs: null };
@@ -448,6 +464,85 @@ async function refreshHistory() {
   renderTempChart();
 }
 
+async function refreshModem() {
+  const status = await getJSON("/api/modem/status");
+  const statusEl = document.getElementById("modem-status");
+  statusEl.innerHTML = status.available
+    ? `<p>State: <strong>${status.state || "unknown"}</strong></p>`
+    : `<p class="empty">No modem detected</p>`;
+}
+
+async function refreshUsbPower() {
+  const status = await getJSON("/api/usb-power/status");
+  const statusEl = document.getElementById("usb-power-status");
+  statusEl.innerHTML = status.available
+    ? `<p>State: <strong>${status.state || "unknown"}</strong></p>`
+    : `<p class="empty">uhubctl unavailable${status.reason ? ": " + status.reason : ""}</p>`;
+}
+
+// Both modem_service.py and usb_power_service.py keep their own in-memory
+// action log ({t, action, ok, detail}) - merged here into one table so the
+// Action log card shows both without needing a source column.
+async function refreshActionLog() {
+  const [modemLog, usbLog] = await Promise.all([
+    getJSON("/api/modem/log"),
+    getJSON("/api/usb-power/log").catch(() => ({ actions: [] })),
+  ]);
+  const actions = [...modemLog.actions, ...usbLog.actions].sort((a, b) => b.t - a.t);
+  const tbody = document.querySelector("#modem-log-table tbody");
+  tbody.innerHTML = "";
+
+  if (actions.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="3" class="empty">No actions yet</td></tr>`;
+    return;
+  }
+
+  for (const a of actions) {
+    const result = a.ok ? "OK" : `Failed${a.detail ? ": " + a.detail : ""}`;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${formatTimestamp(a.t)}</td><td>${a.action}</td><td>${result}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+async function toggleModem(enable) {
+  await fetch(`/api/modem/power?enable=${enable}`, { method: "POST" });
+  refreshModem();
+  refreshActionLog();
+}
+
+async function toggleUsbPower(enable) {
+  await fetch(`/api/usb-power/power?enable=${enable}`, { method: "POST" });
+  refreshUsbPower();
+  refreshActionLog();
+}
+
+async function refreshDongle() {
+  const status = await getJSON("/api/dongle/status");
+  const statusEl = document.getElementById("dongle-status");
+  statusEl.innerHTML = `<p>State: <strong>${DONGLE_LABELS[status.power] || status.power}</strong></p>`;
+}
+
+// ON blocks server-side while it waits for the dongle's HiLink API to come
+// back up after powering the USB on (up to ~30s) - disable the buttons for
+// the duration so a second click can't overlap it.
+async function toggleDongle(enable) {
+  const onBtn = document.getElementById("dongle-on");
+  const offBtn = document.getElementById("dongle-off");
+  onBtn.disabled = true;
+  offBtn.disabled = true;
+  try {
+    await fetch(`/api/dongle/power?enable=${enable}`, { method: "POST" });
+  } finally {
+    onBtn.disabled = false;
+    offBtn.disabled = false;
+  }
+  refreshDongle();
+  refreshModem();
+  refreshUsbPower();
+  refreshActionLog();
+}
+
 function initTabs() {
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -477,3 +572,24 @@ setInterval(refreshSystem, SYSTEM_REFRESH_MS);
 
 refreshHistory();
 setInterval(refreshHistory, HISTORY_REFRESH_MS);
+
+document.getElementById("modem-enable").addEventListener("click", () => toggleModem(true));
+document.getElementById("modem-disable").addEventListener("click", () => toggleModem(false));
+
+document.getElementById("usb-power-enable").addEventListener("click", () => toggleUsbPower(true));
+document.getElementById("usb-power-disable").addEventListener("click", () => toggleUsbPower(false));
+
+document.getElementById("dongle-on").addEventListener("click", () => toggleDongle(true));
+document.getElementById("dongle-off").addEventListener("click", () => toggleDongle(false));
+
+refreshModem();
+setInterval(refreshModem, MODEM_REFRESH_MS);
+
+refreshUsbPower();
+setInterval(refreshUsbPower, USB_POWER_REFRESH_MS);
+
+refreshActionLog();
+setInterval(refreshActionLog, ACTION_LOG_REFRESH_MS);
+
+refreshDongle();
+setInterval(refreshDongle, DONGLE_REFRESH_MS);
