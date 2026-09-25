@@ -138,9 +138,17 @@ td.empty, .empty {
   white-space: normal;
 }
 
-#modem-status p {
+#dongle-status p,
+#modem-status p,
+#usb-power-status p {
   margin: 0;
   font-size: 0.9rem;
+}
+
+.hint {
+  margin: 0 0 10px;
+  font-size: 0.78rem;
+  color: var(--muted);
 }
 
 .modem-actions {
@@ -159,15 +167,52 @@ td.empty, .empty {
   cursor: pointer;
 }
 
-#modem-enable {
+.modem-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+#dongle-on,
+#modem-enable,
+#usb-power-enable {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
 }
 
-#modem-disable {
+#dongle-off,
+#modem-disable,
+#usb-power-disable {
   background: var(--card-bg);
   color: var(--text);
+}
+
+#advanced-card summary {
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+#advanced-card[open] summary {
+  margin-bottom: 10px;
+}
+
+.advanced-block + .advanced-block {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.advanced-block h3 {
+  font-size: 0.75rem;
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
 }
 
 .charts {

@@ -9,11 +9,20 @@ case that's ever set. A PIN-locked SIM shows as undetected until unlocked -
 HILINK_PIN (optional) gets sent via client.pin.operate() on every connect.
 This unit's dial-up ConnectMode is manual, not auto (confirmed live
 2026-09-23) - enabling the radio alone doesn't dial, so set_power(True)
-also calls dial_up.dial(). The APN profile itself (Izarkom: APN "internet",
-blank user/pass, PAP) had to be set once by hand via the dongle's own
-HiLink web page - huawei-lte-api has no clean method for that (it needs
-RSA-encrypted XML the web UI's own JS handles), so it's not something this
-code manages. Same in-memory action log as before - resets on restart."""
+also calls dial_up.dial(). Disabling does NOT go through mobile-dataswitch:
+confirmed live 2026-09-23 that dataswitch reads/writes don't reflect or
+control real connection state on this unit (it read 0 while fully
+connected). The real disconnect is the same dialup/dial endpoint dial()
+uses, with Action=0 instead of 1 - huawei-lte-api has no public hangup(),
+so that goes through its low-level session directly. Also confirmed live
+2026-09-23: neither dataswitch=0 nor this hangup actually powers down the
+radio - the dongle stays registered on the LTE network either way (see
+context.md), so this is a data-session on/off, not a real RF disable. The
+APN profile itself (Izarkom: APN "internet", blank user/pass, PAP) had to
+be set once by hand via the dongle's own HiLink web page - huawei-lte-api
+has no clean method for that (it needs RSA-encrypted XML the web UI's own
+JS handles), so it's not something this code manages. Same in-memory
+action log as before - resets on restart."""
 import time
 
 from huawei_lte_api.Client import Client
@@ -66,9 +75,6 @@ def get_status() -> dict:
         with _connect() as connection:
             client = Client(connection)
             _unlock_pin(client)
-            dataswitch = client.dial_up.mobile_dataswitch()
-            if str(dataswitch.get("dataswitch")) == "0":
-                return {"available": True, "state": "disabled"}
             status = client.monitoring.status()
             code = str(status.get("ConnectionStatus"))
             return {"available": True, "state": _CONNECTION_STATUS.get(code, f"unknown ({code})")}
@@ -88,8 +94,8 @@ def set_power(enable: bool) -> dict:
         with _connect() as connection:
             client = Client(connection)
             _unlock_pin(client)
-            client.dial_up.set_mobile_dataswitch(dataswitch=1 if enable else 0)
             if enable:
+                client.dial_up.set_mobile_dataswitch(dataswitch=1)
                 # ConnectMode is manual on this unit - dataswitch alone
                 # registers on the network but never dials. Best-effort:
                 # dial() erroring (e.g. already connecting) shouldn't fail
@@ -98,6 +104,11 @@ def set_power(enable: bool) -> dict:
                     client.dial_up.dial()
                 except Exception:
                     pass
+            else:
+                # dataswitch doesn't control real state on this unit - the
+                # actual hangup is dialup/dial Action=0, same endpoint
+                # dial() posts Action=1 to. No public method for it.
+                client.dial_up._session.post_set("dialup/dial", {"Action": 0})
         _log_action(action, True)
         return {"ok": True, "error": None}
     except Exception as exc:

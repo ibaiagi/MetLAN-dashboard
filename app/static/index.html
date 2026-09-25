@@ -59,26 +59,49 @@
       <div class="charts" id="temp-charts"></div>
     </section>
 
-    <section class="card" id="modem-card" data-panel="modem" hidden>
-      <h2>Dongle control</h2>
-      <div id="modem-status"></div>
+    <section class="card" id="dongle-card" data-panel="modem" hidden>
+      <h2>Dongle</h2>
+      <div id="dongle-status"></div>
       <div class="modem-actions">
-        <button type="button" id="modem-enable">Enable</button>
-        <button type="button" id="modem-disable">Disable</button>
+        <button type="button" id="dongle-on">ON</button>
+        <button type="button" id="dongle-off">OFF</button>
       </div>
     </section>
 
-    <section class="card" id="modem-log-card" data-panel="modem" hidden>
-      <h2>Action log</h2>
-      <div class="table-scroll">
-        <table id="modem-log-table">
-          <thead>
-            <tr><th>Time</th><th>Action</th><th>Result</th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
+    <details class="card" id="advanced-card" data-panel="modem" hidden>
+      <summary>Advanced</summary>
+
+      <div class="advanced-block">
+        <h3>Data session</h3>
+        <div id="modem-status"></div>
+        <div class="modem-actions">
+          <button type="button" id="modem-enable">Enable</button>
+          <button type="button" id="modem-disable">Disable</button>
+        </div>
       </div>
-    </section>
+
+      <div class="advanced-block">
+        <h3>USB power (real RF off)</h3>
+        <p class="hint">Cuts real power to the dongle's USB port - genuine RF silence, not just the data-session toggle above (that one leaves the dongle registered on LTE). Powering back on does not restart the connection by itself.</p>
+        <div id="usb-power-status"></div>
+        <div class="modem-actions">
+          <button type="button" id="usb-power-enable">Power on</button>
+          <button type="button" id="usb-power-disable">Power off</button>
+        </div>
+      </div>
+
+      <div class="advanced-block">
+        <h3>Action log</h3>
+        <div class="table-scroll">
+          <table id="modem-log-table">
+            <thead>
+              <tr><th>Time</th><th>Action</th><th>Result</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </details>
   </main>
 
   <script src="/app.js"></script>

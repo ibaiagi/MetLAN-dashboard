@@ -19,3 +19,12 @@ HILINK_PASSWORD = os.environ.get("HILINK_PASSWORD")
 # SIM PIN (optional, only needed if the inserted SIM has PIN lock enabled -
 # confirmed 2026-09-23 that a locked SIM shows as undetected otherwise).
 HILINK_PIN = os.environ.get("HILINK_PIN")
+
+# Real USB port power via uhubctl (app/services/usb_power_service.py) -
+# separate from the dongle's own dataswitch, which doesn't cut power to the
+# radio (confirmed 2026-09-25, see context.md). The Pi 4's USB ports are
+# ganged across two hub trees that must both be switched together for a
+# port to actually lose power - confirmed via live testing, don't change
+# without re-testing on real hardware.
+UHUBCTL_BIN = os.environ.get("UHUBCTL_BIN", "/usr/sbin/uhubctl")
+USB_POWER_HUBS = os.environ.get("USB_POWER_HUBS", "2,1-1").split(",")

@@ -2,6 +2,11 @@ const CLIENTS_REFRESH_MS = 1000;
 const STATS_REFRESH_MS = 1000;
 const SYSTEM_REFRESH_MS = 2000;
 const MODEM_REFRESH_MS = 3000;
+const USB_POWER_REFRESH_MS = 5000; // shells out to uhubctl, poll less aggressively than modem status
+const ACTION_LOG_REFRESH_MS = 5000;
+const DONGLE_REFRESH_MS = 3000;
+
+const DONGLE_LABELS = { on: "ON", connecting: "Connecting…", off: "OFF", unknown: "Unknown" };
 
 const THROUGHPUT_HISTORY_CAP = 300;  // 5 min at 1s/poll, in-memory only
 const HISTORY_REFRESH_MS = 60000;    // CPU/temperature history is server-side, sampled once/min
@@ -465,17 +470,34 @@ async function refreshModem() {
   statusEl.innerHTML = status.available
     ? `<p>State: <strong>${status.state || "unknown"}</strong></p>`
     : `<p class="empty">No modem detected</p>`;
+}
 
-  const log = await getJSON("/api/modem/log");
+async function refreshUsbPower() {
+  const status = await getJSON("/api/usb-power/status");
+  const statusEl = document.getElementById("usb-power-status");
+  statusEl.innerHTML = status.available
+    ? `<p>State: <strong>${status.state || "unknown"}</strong></p>`
+    : `<p class="empty">uhubctl unavailable${status.reason ? ": " + status.reason : ""}</p>`;
+}
+
+// Both modem_service.py and usb_power_service.py keep their own in-memory
+// action log ({t, action, ok, detail}) - merged here into one table so the
+// Action log card shows both without needing a source column.
+async function refreshActionLog() {
+  const [modemLog, usbLog] = await Promise.all([
+    getJSON("/api/modem/log"),
+    getJSON("/api/usb-power/log").catch(() => ({ actions: [] })),
+  ]);
+  const actions = [...modemLog.actions, ...usbLog.actions].sort((a, b) => b.t - a.t);
   const tbody = document.querySelector("#modem-log-table tbody");
   tbody.innerHTML = "";
 
-  if (log.actions.length === 0) {
+  if (actions.length === 0) {
     tbody.innerHTML = `<tr><td colspan="3" class="empty">No actions yet</td></tr>`;
     return;
   }
 
-  for (const a of log.actions) {
+  for (const a of actions) {
     const result = a.ok ? "OK" : `Failed${a.detail ? ": " + a.detail : ""}`;
     const tr = document.createElement("tr");
     tr.innerHTML = `<td>${formatTimestamp(a.t)}</td><td>${a.action}</td><td>${result}</td>`;
@@ -486,6 +508,39 @@ async function refreshModem() {
 async function toggleModem(enable) {
   await fetch(`/api/modem/power?enable=${enable}`, { method: "POST" });
   refreshModem();
+  refreshActionLog();
+}
+
+async function toggleUsbPower(enable) {
+  await fetch(`/api/usb-power/power?enable=${enable}`, { method: "POST" });
+  refreshUsbPower();
+  refreshActionLog();
+}
+
+async function refreshDongle() {
+  const status = await getJSON("/api/dongle/status");
+  const statusEl = document.getElementById("dongle-status");
+  statusEl.innerHTML = `<p>State: <strong>${DONGLE_LABELS[status.power] || status.power}</strong></p>`;
+}
+
+// ON blocks server-side while it waits for the dongle's HiLink API to come
+// back up after powering the USB on (up to ~30s) - disable the buttons for
+// the duration so a second click can't overlap it.
+async function toggleDongle(enable) {
+  const onBtn = document.getElementById("dongle-on");
+  const offBtn = document.getElementById("dongle-off");
+  onBtn.disabled = true;
+  offBtn.disabled = true;
+  try {
+    await fetch(`/api/dongle/power?enable=${enable}`, { method: "POST" });
+  } finally {
+    onBtn.disabled = false;
+    offBtn.disabled = false;
+  }
+  refreshDongle();
+  refreshModem();
+  refreshUsbPower();
+  refreshActionLog();
 }
 
 function initTabs() {
@@ -521,5 +576,20 @@ setInterval(refreshHistory, HISTORY_REFRESH_MS);
 document.getElementById("modem-enable").addEventListener("click", () => toggleModem(true));
 document.getElementById("modem-disable").addEventListener("click", () => toggleModem(false));
 
+document.getElementById("usb-power-enable").addEventListener("click", () => toggleUsbPower(true));
+document.getElementById("usb-power-disable").addEventListener("click", () => toggleUsbPower(false));
+
+document.getElementById("dongle-on").addEventListener("click", () => toggleDongle(true));
+document.getElementById("dongle-off").addEventListener("click", () => toggleDongle(false));
+
 refreshModem();
 setInterval(refreshModem, MODEM_REFRESH_MS);
+
+refreshUsbPower();
+setInterval(refreshUsbPower, USB_POWER_REFRESH_MS);
+
+refreshActionLog();
+setInterval(refreshActionLog, ACTION_LOG_REFRESH_MS);
+
+refreshDongle();
+setInterval(refreshDongle, DONGLE_REFRESH_MS);
