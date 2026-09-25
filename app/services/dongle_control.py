@@ -7,7 +7,11 @@ usb_power_service.py's docstring). ON powers the USB back on, waits for
 the dongle's HiLink API to come back up, then dials - set_power(True) is
 called either way once the wait loop ends, so a genuine failure to come
 back up still surfaces through modem_service's own action log instead of
-disappearing silently. The granular per-step controls stay reachable
+disappearing silently. Confirmed live 2026-09-25: a single dial() right
+after a fresh power-on often lands while the modem is still mid-attach -
+it registers (LED blinking cyan) but never actually connects - so the
+dial is retried until ConnectionStatus reports connected instead of
+trusting the first call. The granular per-step controls stay reachable
 under the dashboard's Advanced section for debugging.
 """
 import time
@@ -16,6 +20,8 @@ from app.services import modem_service, usb_power_service
 
 _BOOT_POLL_INTERVAL_S = 2
 _BOOT_TIMEOUT_S = 30
+_CONNECT_POLL_INTERVAL_S = 3
+_CONNECT_RETRIES = 6
 
 
 def get_status() -> dict:
@@ -45,7 +51,13 @@ def power_on() -> dict:
             break
         time.sleep(_BOOT_POLL_INTERVAL_S)
 
-    return modem_service.set_power(True)
+    result = modem_service.set_power(True)
+    for _ in range(_CONNECT_RETRIES):
+        if modem_service.get_status().get("state") == "connected":
+            break
+        time.sleep(_CONNECT_POLL_INTERVAL_S)
+        result = modem_service.set_power(True)
+    return result
 
 
 def power_off() -> dict:
